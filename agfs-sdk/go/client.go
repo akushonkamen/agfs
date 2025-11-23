@@ -1,4 +1,4 @@
-package client
+package agfs
 
 import (
 	"bytes"
@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
 )
 
 // Client is a Go client for AGFS HTTP API
@@ -65,12 +63,12 @@ type SuccessResponse struct {
 
 // FileInfoResponse represents file info response from the API
 type FileInfoResponse struct {
-	Name    string              `json:"name"`
-	Size    int64               `json:"size"`
-	Mode    uint32              `json:"mode"`
-	ModTime string              `json:"modTime"`
-	IsDir   bool                `json:"isDir"`
-	Meta    filesystem.MetaData `json:"meta,omitempty"`
+	Name    string   `json:"name"`
+	Size    int64    `json:"size"`
+	Mode    uint32   `json:"mode"`
+	ModTime string   `json:"modTime"`
+	IsDir   bool     `json:"isDir"`
+	Meta    MetaData `json:"meta,omitempty"`
 }
 
 // ListResponse represents directory listing response from the API
@@ -316,7 +314,7 @@ func isRetryableError(err error) bool {
 }
 
 // ReadDir lists the contents of a directory
-func (c *Client) ReadDir(path string) ([]filesystem.FileInfo, error) {
+func (c *Client) ReadDir(path string) ([]FileInfo, error) {
 	query := url.Values{}
 	query.Set("path", path)
 
@@ -339,10 +337,10 @@ func (c *Client) ReadDir(path string) ([]filesystem.FileInfo, error) {
 		return nil, fmt.Errorf("failed to decode list response: %w", err)
 	}
 
-	files := make([]filesystem.FileInfo, 0, len(listResp.Files))
+	files := make([]FileInfo, 0, len(listResp.Files))
 	for _, f := range listResp.Files {
 		modTime, _ := time.Parse(time.RFC3339Nano, f.ModTime)
-		files = append(files, filesystem.FileInfo{
+		files = append(files, FileInfo{
 			Name:    f.Name,
 			Size:    f.Size,
 			Mode:    f.Mode,
@@ -356,7 +354,7 @@ func (c *Client) ReadDir(path string) ([]filesystem.FileInfo, error) {
 }
 
 // Stat returns file information
-func (c *Client) Stat(path string) (*filesystem.FileInfo, error) {
+func (c *Client) Stat(path string) (*FileInfo, error) {
 	query := url.Values{}
 	query.Set("path", path)
 
@@ -381,7 +379,7 @@ func (c *Client) Stat(path string) (*filesystem.FileInfo, error) {
 
 	modTime, _ := time.Parse(time.RFC3339Nano, fileInfo.ModTime)
 
-	return &filesystem.FileInfo{
+	return &FileInfo{
 		Name:    fileInfo.Name,
 		Size:    fileInfo.Size,
 		Mode:    fileInfo.Mode,

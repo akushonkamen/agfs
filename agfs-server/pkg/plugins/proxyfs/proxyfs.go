@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/c4pt0r/agfs/agfs-server/pkg/client"
+	agfs "github.com/c4pt0r/agfs/agfs-sdk/go"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin"
 )
@@ -15,10 +15,35 @@ const (
 	PluginName = "proxyfs" // Name of this plugin
 )
 
+// Convert SDK FileInfo to server FileInfo
+func convertFileInfo(src agfs.FileInfo) filesystem.FileInfo {
+	return filesystem.FileInfo{
+		Name:    src.Name,
+		Size:    src.Size,
+		Mode:    src.Mode,
+		ModTime: src.ModTime,
+		IsDir:   src.IsDir,
+		Meta: filesystem.MetaData{
+			Name:    src.Meta.Name,
+			Type:    src.Meta.Type,
+			Content: src.Meta.Content,
+		},
+	}
+}
+
+// Convert SDK FileInfo slice to server FileInfo slice
+func convertFileInfos(src []agfs.FileInfo) []filesystem.FileInfo {
+	result := make([]filesystem.FileInfo, len(src))
+	for i, f := range src {
+		result[i] = convertFileInfo(f)
+	}
+	return result
+}
+
 // ProxyFS implements filesystem.FileSystem by proxying to a remote AGFS HTTP API
 // All file system operations are transparently forwarded to the remote server
 type ProxyFS struct {
-	client     *client.Client
+	client     *agfs.Client
 	pluginName string
 	baseURL    string // Store base URL for reload
 }
@@ -27,7 +52,7 @@ type ProxyFS struct {
 // baseURL should include the API version, e.g., "http://localhost:8080/api/v1"
 func NewProxyFS(baseURL string, pluginName string) *ProxyFS {
 	return &ProxyFS{
-		client:     client.NewClient(baseURL),
+		client:     agfs.NewClient(baseURL),
 		pluginName: pluginName,
 		baseURL:    baseURL,
 	}
@@ -36,7 +61,7 @@ func NewProxyFS(baseURL string, pluginName string) *ProxyFS {
 // Reload recreates the HTTP client, useful for refreshing connections
 func (p *ProxyFS) Reload() error {
 	// Create a new client to refresh the connection
-	p.client = client.NewClient(p.baseURL)
+	p.client = agfs.NewClient(p.baseURL)
 
 	// Test the new connection
 	if err := p.client.Health(); err != nil {
@@ -83,10 +108,12 @@ func (p *ProxyFS) Write(path string, data []byte) ([]byte, error) {
 }
 
 func (p *ProxyFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
-	files, err := p.client.ReadDir(path)
+	sdkFiles, err := p.client.ReadDir(path)
 	if err != nil {
 		return nil, err
 	}
+
+	files := convertFileInfos(sdkFiles)
 
 	// Add /reload virtual file to root directory listing
 	if path == "/" {
@@ -129,10 +156,13 @@ func (p *ProxyFS) Stat(path string) (*filesystem.FileInfo, error) {
 	}
 
 	// Get stat from remote
-	stat, err := p.client.Stat(path)
+	sdkStat, err := p.client.Stat(path)
 	if err != nil {
 		return nil, err
 	}
+
+	// Convert SDK FileInfo to server FileInfo
+	stat := convertFileInfo(*sdkStat)
 
 	// Add remote URL to metadata
 	if stat.Meta.Content == nil {
@@ -140,7 +170,7 @@ func (p *ProxyFS) Stat(path string) (*filesystem.FileInfo, error) {
 	}
 	stat.Meta.Content["remote-url"] = p.baseURL
 
-	return stat, nil
+	return &stat, nil
 }
 
 func (p *ProxyFS) Rename(oldPath, newPath string) error {

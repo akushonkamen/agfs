@@ -1,4 +1,4 @@
-package client
+package agfs
 
 import (
 	"encoding/json"
@@ -12,8 +12,8 @@ func TestClient_Create(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/files" {
-			t.Errorf("expected /files, got %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/files" {
+			t.Errorf("expected /api/v1/files, got %s", r.URL.Path)
 		}
 		if r.URL.Query().Get("path") != "/test/file.txt" {
 			t.Errorf("expected path=/test/file.txt, got %s", r.URL.Query().Get("path"))
@@ -37,8 +37,8 @@ func TestClient_Read(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET, got %s", r.Method)
 		}
-		if r.URL.Path != "/files" {
-			t.Errorf("expected /files, got %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/files" {
+			t.Errorf("expected /api/v1/files, got %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write(expectedData)
@@ -62,8 +62,8 @@ func TestClient_Write(t *testing.T) {
 		if r.Method != http.MethodPut {
 			t.Errorf("expected PUT, got %s", r.Method)
 		}
-		if r.URL.Path != "/files" {
-			t.Errorf("expected /files, got %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/files" {
+			t.Errorf("expected /api/v1/files, got %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(SuccessResponse{Message: "OK"})
@@ -85,8 +85,8 @@ func TestClient_Mkdir(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/directories" {
-			t.Errorf("expected /directories, got %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/directories" {
+			t.Errorf("expected /api/v1/directories, got %s", r.URL.Path)
 		}
 		if r.URL.Query().Get("mode") != "755" {
 			t.Errorf("expected mode=755, got %s", r.URL.Query().Get("mode"))
