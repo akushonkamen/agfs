@@ -164,8 +164,11 @@ class Shell:
             expanded_args = []
 
             for arg in args:
+                # Skip flags (arguments starting with -)
+                if arg.startswith('-'):
+                    expanded_args.append(arg)
                 # Check if argument contains glob characters
-                if '*' in arg or '?' in arg or '[' in arg:
+                elif '*' in arg or '?' in arg or '[' in arg:
                     # Try to expand the glob pattern
                     matches = self._match_glob_pattern(arg)
 

@@ -736,7 +736,7 @@ def cmd_rm(process: Process) -> int:
     """
     Remove file or directory
 
-    Usage: rm [-r] path
+    Usage: rm [-r] path...
     """
     if not process.args:
         process.stderr.write("rm: missing operand\n")
@@ -747,26 +747,30 @@ def cmd_rm(process: Process) -> int:
         return 1
 
     recursive = False
-    path = None
+    paths = []
 
     for arg in process.args:
         if arg == '-r' or arg == '-rf':
             recursive = True
         else:
-            path = arg
+            paths.append(arg)
 
-    if not path:
+    if not paths:
         process.stderr.write("rm: missing file operand\n")
         return 1
 
-    try:
-        # Use AGFS client to remove file/directory
-        process.filesystem.client.rm(path, recursive=recursive)
-        return 0
-    except Exception as e:
-        error_msg = str(e)
-        process.stderr.write(f"rm: {path}: {error_msg}\n")
-        return 1
+    exit_code = 0
+
+    for path in paths:
+        try:
+            # Use AGFS client to remove file/directory
+            process.filesystem.client.rm(path, recursive=recursive)
+        except Exception as e:
+            error_msg = str(e)
+            process.stderr.write(f"rm: {path}: {error_msg}\n")
+            exit_code = 1
+
+    return exit_code
 
 
 @command()
@@ -1411,13 +1415,13 @@ def _download_dir(process: Process, agfs_path: str, local_path: str) -> int:
         return 1
 
 
-@command()
+@command(needs_path_resolution=True)
 def cmd_cp(process: Process) -> int:
     """
     Copy files between local filesystem and AGFS
 
     Usage:
-        cp [-r] <source> <dest>
+        cp [-r] <source>... <dest>
         cp [-r] local:<path> <agfs_path>   # Upload from local to AGFS
         cp [-r] <agfs_path> local:<path>   # Download from AGFS to local
         cp [-r] <agfs_path1> <agfs_path2>  # Copy within AGFS
@@ -1430,36 +1434,48 @@ def cmd_cp(process: Process) -> int:
         recursive = True
         args = args[1:]
 
-    if len(args) != 2:
-        process.stderr.write("cp: usage: cp [-r] <source> <dest>\n")
+    if len(args) < 2:
+        process.stderr.write("cp: usage: cp [-r] <source>... <dest>\n")
         return 1
 
-    source = args[0]
-    dest = args[1]
+    # Last argument is destination, all others are sources
+    sources = args[:-1]
+    dest = args[-1]
 
-    # Parse source and dest to determine operation type
-    source_is_local = source.startswith('local:')
+    # Parse dest to determine if it's local
     dest_is_local = dest.startswith('local:')
-
-    if source_is_local:
-        source = source[6:]  # Remove 'local:' prefix
     if dest_is_local:
         dest = dest[6:]  # Remove 'local:' prefix
 
-    # Determine operation type
-    if source_is_local and not dest_is_local:
-        # Upload: local -> AGFS
-        return _cp_upload(process, source, dest, recursive)
-    elif not source_is_local and dest_is_local:
-        # Download: AGFS -> local
-        return _cp_download(process, source, dest, recursive)
-    elif not source_is_local and not dest_is_local:
-        # Copy within AGFS
-        return _cp_agfs(process, source, dest, recursive)
-    else:
-        # local -> local (not supported, use system cp)
-        process.stderr.write("cp: local to local copy not supported, use system cp command\n")
-        return 1
+    exit_code = 0
+
+    # Process each source file
+    for source in sources:
+        # Parse source to determine operation type
+        source_is_local = source.startswith('local:')
+
+        if source_is_local:
+            source = source[6:]  # Remove 'local:' prefix
+
+        # Determine operation type
+        if source_is_local and not dest_is_local:
+            # Upload: local -> AGFS
+            result = _cp_upload(process, source, dest, recursive)
+        elif not source_is_local and dest_is_local:
+            # Download: AGFS -> local
+            result = _cp_download(process, source, dest, recursive)
+        elif not source_is_local and not dest_is_local:
+            # Copy within AGFS
+            result = _cp_agfs(process, source, dest, recursive)
+        else:
+            # local -> local (not supported, use system cp)
+            process.stderr.write("cp: local to local copy not supported, use system cp command\n")
+            result = 1
+
+        if result != 0:
+            exit_code = result
+
+    return exit_code
 
 
 def _cp_upload(process: Process, local_path: str, agfs_path: str, recursive: bool = False) -> int:

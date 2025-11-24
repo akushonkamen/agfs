@@ -246,5 +246,89 @@ class TestBuiltins(unittest.TestCase):
         self.assertIn('subfile1.txt', output)
         self.assertIn('subfile2.txt', output)
 
+    def test_rm_with_glob_pattern(self):
+        """Test rm command with glob pattern (simulating shell glob expansion)"""
+        cmd = BUILTINS['rm']
+
+        # Create a mock filesystem
+        mock_fs = Mock()
+        mock_client = Mock()
+        mock_fs.client = mock_client
+
+        # Track which files were deleted
+        deleted_files = []
+
+        def mock_rm(path, recursive=False):
+            deleted_files.append((path, recursive))
+
+        mock_client.rm = mock_rm
+
+        # Test rm with multiple files (simulating glob expansion of '23_11_2025*')
+        # This simulates what should happen when the shell expands the glob pattern
+        proc = self.create_process("rm", [
+            "/test/23_11_2025_11_43_05.wav",
+            "/test/23_11_2025_11_43_36.wav",
+            "/test/23_11_2025_11_44_11.wav"
+        ])
+        proc.filesystem = mock_fs
+
+        exit_code = cmd(proc)
+        self.assertEqual(exit_code, 0)
+
+        # Verify all files were deleted
+        self.assertEqual(len(deleted_files), 3)
+        self.assertIn(('/test/23_11_2025_11_43_05.wav', False), deleted_files)
+        self.assertIn(('/test/23_11_2025_11_43_36.wav', False), deleted_files)
+        self.assertIn(('/test/23_11_2025_11_44_11.wav', False), deleted_files)
+
+    def test_cp_with_glob_pattern(self):
+        """Test cp command with glob pattern (simulating shell glob expansion)"""
+        cmd = BUILTINS['cp']
+
+        # Create a mock filesystem
+        mock_fs = Mock()
+
+        # Track which files were copied
+        copied_files = []
+
+        def mock_read_file(path, stream=False):
+            return b"file contents"
+
+        def mock_write_file(path, data, append=False):
+            copied_files.append((path, data))
+
+        def mock_get_file_info(path):
+            # Mock /dest/ as a directory
+            if path == '/dest' or path == '/dest/':
+                return {'name': 'dest', 'isDir': True, 'size': 0}
+            # Mock source files as regular files
+            return {'name': os.path.basename(path), 'isDir': False, 'size': 100}
+
+        mock_fs.read_file = mock_read_file
+        mock_fs.write_file = mock_write_file
+        mock_fs.get_file_info = mock_get_file_info
+
+        # Test cp with multiple source files (simulating glob expansion like 'cp *.txt /dest/')
+        proc = self.create_process("cp", [
+            "/test/file1.txt",
+            "/test/file2.txt",
+            "/test/file3.txt",
+            "/dest/"
+        ])
+        proc.filesystem = mock_fs
+        proc.cwd = "/test"
+
+        exit_code = cmd(proc)
+        self.assertEqual(exit_code, 0)
+
+        # Verify all files were copied
+        self.assertEqual(len(copied_files), 3)
+
+        # Check that the destination paths are correct
+        copied_paths = [path for path, _ in copied_files]
+        self.assertIn('/dest/file1.txt', copied_paths)
+        self.assertIn('/dest/file2.txt', copied_paths)
+        self.assertIn('/dest/file3.txt', copied_paths)
+
 if __name__ == '__main__':
     unittest.main()
