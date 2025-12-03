@@ -7,8 +7,26 @@ from .shell import Shell
 from .config import Config
 
 
-def execute_script_file(shell, script_path):
-    """Execute a script file line by line"""
+def execute_script_file(shell, script_path, script_args=None):
+    """Execute a script file line by line
+
+    Args:
+        shell: Shell instance
+        script_path: Path to script file
+        script_args: List of arguments to pass to script (accessible as $1, $2, etc.)
+    """
+    # Set script name and arguments as environment variables
+    shell.env['0'] = script_path  # Script name
+
+    if script_args:
+        for i, arg in enumerate(script_args, start=1):
+            shell.env[str(i)] = arg
+        shell.env['#'] = str(len(script_args))
+        shell.env['@'] = ' '.join(script_args)
+    else:
+        shell.env['#'] = '0'
+        shell.env['@'] = ''
+
     try:
         with open(script_path, 'r') as f:
             lines = f.readlines()
@@ -78,6 +96,9 @@ def execute_script_file(shell, script_path):
                 elif exit_code != 0:
                     sys.stderr.write(f"Error at line {line_num}: command failed with exit code {exit_code}\n")
                     return exit_code
+            except SystemExit as e:
+                # Handle exit command - return the exit code
+                return e.code if e.code is not None else 0
             except Exception as e:
                 sys.stderr.write(f"Error at line {line_num}: {str(e)}\n")
                 return 1
@@ -85,6 +106,9 @@ def execute_script_file(shell, script_path):
             i += 1
 
         return exit_code
+    except SystemExit as e:
+        # Handle exit command at top level
+        return e.code if e.code is not None else 0
     except FileNotFoundError:
         sys.stderr.write(f"agfs-shell: {script_path}: No such file or directory\n")
         return 127
@@ -206,7 +230,7 @@ def main():
 
     elif args.script and os.path.isfile(args.script):
         # Mode 2: script file
-        exit_code = execute_script_file(shell, args.script)
+        exit_code = execute_script_file(shell, args.script, script_args=args.args)
         sys.exit(exit_code)
 
     elif args.script:

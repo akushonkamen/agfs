@@ -2897,6 +2897,36 @@ def cmd_date(process: Process) -> int:
         return 1
 
 
+@command()
+def cmd_exit(process: Process) -> int:
+    """
+    Exit the script with an optional exit code
+
+    Usage: exit [n]
+
+    Exit with status n (defaults to 0).
+    In a script, exits the entire script.
+    In interactive mode, exits the shell.
+
+    Examples:
+        exit        # Exit with status 0
+        exit 1      # Exit with status 1
+        exit $?     # Exit with last command's exit code
+    """
+    import sys
+
+    exit_code = 0
+    if process.args:
+        try:
+            exit_code = int(process.args[0])
+        except ValueError:
+            process.stderr.write(f"exit: {process.args[0]}: numeric argument required\n")
+            exit_code = 2
+
+    # Exit by raising SystemExit
+    sys.exit(exit_code)
+
+
 # Registry of built-in commands
 BUILTINS = {
     'echo': cmd_echo,
@@ -2932,6 +2962,7 @@ BUILTINS = {
     'plugins': cmd_plugins,
     'mount': cmd_mount,
     'date': cmd_date,
+    'exit': cmd_exit,
     '?': cmd_help,
     'help': cmd_help,
 }

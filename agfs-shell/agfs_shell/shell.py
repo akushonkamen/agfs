@@ -107,13 +107,23 @@ class Shell:
     def _expand_variables(self, text: str) -> str:
         """
         Expand environment variables and command substitutions in text
-        Supports: $VAR, ${VAR}, $(command), `command`, and $? (exit code)
+        Supports: $VAR, ${VAR}, $(command), `command`, and special variables:
+        - $? : exit code of last command
+        - $1, $2, ... : script/function arguments
+        - $# : number of arguments
+        - $@ : all arguments as string
         """
         import re
 
-        # First, expand special variables like $?
+        # First, expand special variables (in specific order to avoid conflicts)
         # $? - exit code of last command
         text = text.replace('$?', self.env.get('?', '0'))
+        # $# - number of arguments (must be before $0 to avoid conflict)
+        text = text.replace('$#', self.env.get('#', '0'))
+        # $@ - all arguments
+        text = text.replace('$@', self.env.get('@', ''))
+        # $0 - script name (do this after $# to avoid conflicts)
+        text = text.replace('$0', self.env.get('0', ''))
 
         # Then, expand command substitutions: $(command) and `command`
         # Process $(...) command substitution
@@ -131,13 +141,22 @@ class Shell:
         text = re.sub(r'`([^`]+)`', replace_backtick_subst, text)
 
         # Then expand ${VAR} (higher priority than $VAR)
+        # Supports: ${VAR}, ${1}, ${2}, etc.
         def replace_braced(match):
             var_name = match.group(1)
             return self.env.get(var_name, '')
 
-        text = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}', replace_braced, text)
+        text = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*|\d+)\}', replace_braced, text)
 
-        # Finally expand $VAR
+        # Finally expand $VAR and $1, $2, etc.
+        # First expand positional parameters ($1, $2, ...)
+        def replace_positional(match):
+            var_name = match.group(1)
+            return self.env.get(var_name, '')
+
+        text = re.sub(r'\$(\d+)', replace_positional, text)
+
+        # Then expand regular variables ($VAR)
         def replace_simple(match):
             var_name = match.group(1)
             return self.env.get(var_name, '')
@@ -322,6 +341,8 @@ class Shell:
         parsed = self._parse_for_loop(lines)
 
         if not parsed:
+            self.console.print("[red]Syntax error: invalid for loop syntax[/red]", highlight=False)
+            self.console.print("[yellow]Expected: for var in items; do commands; done[/yellow]", highlight=False)
             return 1
 
         var_name = parsed['var']
@@ -471,8 +492,17 @@ class Shell:
                 # Regular command in loop body
                 if state == 'do':
                     result['commands'].append(line)
+                elif state == 'for' and first_for_parsed:
+                    # We're in 'for' state after parsing the for statement,
+                    # but seeing a regular command before 'do' - this is a syntax error
+                    return None
 
-        return result if result['var'] else None
+        # Validate the parsed result
+        # Must have: variable name, items, and at least reached 'do' state
+        if not result['var']:
+            return None
+
+        return result
 
     def execute_if_statement(self, lines: List[str]) -> int:
         """
@@ -485,6 +515,12 @@ class Shell:
             Exit code of executed commands
         """
         parsed = self._parse_if_statement(lines)
+
+        # Check if parsing was successful
+        if not parsed or not parsed.get('conditions'):
+            self.console.print("[red]Syntax error: invalid if statement syntax[/red]", highlight=False)
+            self.console.print("[yellow]Expected: if condition; then commands; fi[/yellow]", highlight=False)
+            return 1
 
         # Evaluate conditions in order
         for condition_cmd, commands_block in parsed['conditions']:
