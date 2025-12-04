@@ -53,6 +53,7 @@
 #include "agfs_types.h"
 #include "agfs_ffi.h"
 #include "agfs_hostfs.h"
+#include "agfs_http.h"
 #include "agfs_filesystem.h"
 #include "agfs_export.h"
 

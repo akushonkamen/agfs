@@ -154,6 +154,11 @@ func (wl *WASMPluginLoader) LoadWASMPlugin(wasmPath string, hostFS ...interface{
 				return uint32(api.HostFSChmod(ctx, mod, []uint64{uint64(pathPtr), uint64(mode)}, fs)[0])
 			}).
 			Export("host_fs_chmod").
+			NewFunctionBuilder().
+			WithFunc(func(ctx context.Context, mod wazeroapi.Module, requestPtr uint32) uint64 {
+				return api.HostHTTPRequest(ctx, mod, []uint64{uint64(requestPtr)})[0]
+			}).
+			Export("host_http_request").
 			Instantiate(ctx)
 	if err != nil {
 		r.Close(ctx)
