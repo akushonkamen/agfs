@@ -6,6 +6,7 @@
 //! - cat /hackernews/frontpage/1.md - Read a specific story
 
 use agfs_wasm_ffi::prelude::*;
+use indoc::formatdoc;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
@@ -102,31 +103,48 @@ impl HackerNewsFS {
     }
 
     fn story_to_markdown(&self, index: usize, story: &HNItem) -> String {
-        let mut md = String::new();
+        let url_line = if !story.url.is_empty() {
+            format!("- **URL**: {}\n", story.url)
+        } else {
+            String::new()
+        };
 
-        md.push_str(&format!("# {}\n\n", story.title));
-        md.push_str(&format!("**Story #{}**\n\n", index + 1));
-        md.push_str(&format!("- **Author**: {}\n", story.by));
-        md.push_str(&format!("- **Score**: {}\n", story.score));
-        md.push_str(&format!("- **Comments**: {}\n", story.descendants));
-        md.push_str(&format!("- **ID**: {}\n", story.id));
+        let content_section = if !story.text.is_empty() {
+            formatdoc! {"
 
-        if !story.url.is_empty() {
-            md.push_str(&format!("- **URL**: {}\n", story.url));
+                ## Content
+
+                {}
+            ", story.text}
+        } else {
+            String::new()
+        };
+
+        formatdoc! {"
+            # {}
+
+            **Story #{}**
+
+            - **Author**: {}
+            - **Score**: {}
+            - **Comments**: {}
+            - **ID**: {}
+            {}- **Time**: {}
+            {}
+            ---
+            View on HN: https://news.ycombinator.com/item?id={}
+        ",
+            story.title,
+            index + 1,
+            story.by,
+            story.score,
+            story.descendants,
+            story.id,
+            url_line,
+            story.time,
+            content_section,
+            story.id
         }
-
-        md.push_str(&format!("- **Time**: {}\n", story.time));
-
-        if !story.text.is_empty() {
-            md.push_str("\n## Content\n\n");
-            md.push_str(&story.text);
-            md.push('\n');
-        }
-
-        md.push_str("\n---\n");
-        md.push_str(&format!("View on HN: https://news.ycombinator.com/item?id={}\n", story.id));
-
-        md
     }
 }
 
