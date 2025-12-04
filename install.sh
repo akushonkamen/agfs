@@ -148,8 +148,8 @@ install_systemd_service() {
     echo ""
     echo "Installing systemd service..."
 
-    # Download service file template
-    SERVICE_URL="https://raw.githubusercontent.com/$REPO/$LATEST_TAG/agfs-server/agfs-server.service"
+    # Download service file template (use master branch, not release tag)
+    SERVICE_URL="https://raw.githubusercontent.com/$REPO/master/agfs-server/agfs-server.service"
     TMP_SERVICE=$(mktemp)
 
     if ! curl -fsSL -o "$TMP_SERVICE" "$SERVICE_URL" 2>/dev/null; then
@@ -168,7 +168,7 @@ install_systemd_service() {
         -e "s|%INSTALL_DIR%|$INSTALL_DIR|g" \
         "$TMP_SERVICE" > "$TMP_SERVICE.processed"
 
-    # Check if we have sudo privileges
+    # Install systemd service (requires root/sudo)
     if [ "$CURRENT_USER" = "root" ]; then
         # Running as root
         cp "$TMP_SERVICE.processed" /etc/systemd/system/agfs-server.service
@@ -178,26 +178,20 @@ install_systemd_service() {
         echo "To enable and start the service:"
         echo "  systemctl enable agfs-server"
         echo "  systemctl start agfs-server"
-    elif sudo -n true 2>/dev/null; then
-        # Have passwordless sudo
-        sudo cp "$TMP_SERVICE.processed" /etc/systemd/system/agfs-server.service
+    else
+        # Require sudo with password prompt
+        echo "Installing systemd service requires root privileges."
+        if ! sudo cp "$TMP_SERVICE.processed" /etc/systemd/system/agfs-server.service; then
+            echo "Error: Failed to install systemd service (sudo required)"
+            rm -f "$TMP_SERVICE" "$TMP_SERVICE.processed"
+            return 1
+        fi
         sudo systemctl daemon-reload
         echo "✓ systemd service installed to /etc/systemd/system/agfs-server.service"
         echo ""
         echo "To enable and start the service:"
         echo "  sudo systemctl enable agfs-server"
         echo "  sudo systemctl start agfs-server"
-    else
-        # No sudo, install as user service
-        USER_SERVICE_DIR="$HOME/.config/systemd/user"
-        mkdir -p "$USER_SERVICE_DIR"
-        cp "$TMP_SERVICE.processed" "$USER_SERVICE_DIR/agfs-server.service"
-        systemctl --user daemon-reload 2>/dev/null || true
-        echo "✓ systemd user service installed to $USER_SERVICE_DIR/agfs-server.service"
-        echo ""
-        echo "To enable and start the service:"
-        echo "  systemctl --user enable agfs-server"
-        echo "  systemctl --user start agfs-server"
     fi
 
     rm -f "$TMP_SERVICE" "$TMP_SERVICE.processed"
