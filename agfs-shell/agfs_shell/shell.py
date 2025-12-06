@@ -104,6 +104,56 @@ class Shell:
         except Exception as e:
             return ''
 
+    def _strip_comment(self, line: str) -> str:
+        """
+        Remove comments from a command line
+        - Lines starting with # are treated as full comments
+        - Inline comments (# after command) are removed
+        - # inside quotes (single or double) are preserved
+
+        Args:
+            line: Command line string
+
+        Returns:
+            Line with comments removed
+        """
+        # Empty line or full-line comment
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith('#'):
+            return ''
+
+        # Process character by character to handle quotes properly
+        result = []
+        in_single_quote = False
+        in_double_quote = False
+        escape_next = False
+
+        for i, char in enumerate(line):
+            if escape_next:
+                result.append(char)
+                escape_next = False
+                continue
+
+            if char == '\\':
+                result.append(char)
+                escape_next = True
+                continue
+
+            # Track quote state
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                result.append(char)
+            elif char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                result.append(char)
+            elif char == '#' and not in_single_quote and not in_double_quote:
+                # Found comment start outside quotes - stop here
+                break
+            else:
+                result.append(char)
+
+        return ''.join(result).rstrip()
+
     def _expand_variables(self, text: str) -> str:
         """
         Expand environment variables and command substitutions in text
@@ -466,6 +516,9 @@ class Shell:
                         result['var'] = var_and_in[0].strip()
                         items_str = var_and_in[1].strip()
 
+                        # Remove inline comments before processing
+                        items_str = self._strip_comment(items_str)
+
                         # Expand variables in items string first
                         items_str = self._expand_variables(items_str)
 
@@ -592,6 +645,8 @@ class Shell:
                     result['conditions'].append((current_condition, current_block))
                 # Start new condition
                 condition_part = line[5:].strip()
+                # Remove inline comments before processing
+                condition_part = self._strip_comment(condition_part)
                 # Check if 'then' is on the same line
                 has_then = condition_part.endswith(' then')
                 # Remove trailing 'then' if present on same line
@@ -622,6 +677,8 @@ class Shell:
             elif line.startswith('if '):
                 # Initial if statement - extract condition
                 condition_part = line[3:].strip()
+                # Remove inline comments before processing
+                condition_part = self._strip_comment(condition_part)
                 # Check if 'then' is on the same line
                 has_then = condition_part.endswith(' then')
                 # Remove trailing 'then' if present on same line
@@ -651,6 +708,13 @@ class Shell:
         Returns:
             Exit code of the pipeline
         """
+        # Strip comments from the command line
+        command_line = self._strip_comment(command_line)
+
+        # If command is empty after stripping comments, return success
+        if not command_line.strip():
+            return 0
+
         # Check for for loop (special handling required)
         if command_line.strip().startswith('for '):
             # Check if it's a complete single-line for loop
