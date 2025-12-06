@@ -173,6 +173,12 @@ body {
   transform: rotate(90deg);
 }
 
+.expand-icon-placeholder {
+  flex-shrink: 0;
+  width: 16px;
+  display: inline-block;
+}
+
 /* Scrollbar styles */
 ::-webkit-scrollbar {
   width: 10px;

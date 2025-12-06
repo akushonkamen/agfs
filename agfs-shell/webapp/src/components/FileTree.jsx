@@ -30,7 +30,7 @@ const FileTreeItem = ({ item, depth, onSelect, selectedFile, onToggle, expanded,
             ▶
           </span>
         )}
-        {!isDirectory && <span style={{ width: '16px' }}></span>}
+        {!isDirectory && <span className="expand-icon-placeholder"></span>}
         <span className="file-icon">
           {isDirectory ? '📁' : '📄'}
         </span>
@@ -55,7 +55,7 @@ const FileTreeItem = ({ item, depth, onSelect, selectedFile, onToggle, expanded,
   );
 };
 
-const FileTree = ({ currentPath, onFileSelect, selectedFile, wsRef }) => {
+const FileTree = ({ currentPath, onFileSelect, selectedFile, wsRef, refreshTrigger }) => {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedDirs, setExpandedDirs] = useState({ '/': true });
@@ -203,8 +203,8 @@ const FileTree = ({ currentPath, onFileSelect, selectedFile, wsRef }) => {
       });
 
       if (response.ok) {
-        // Refresh tree
-        setExpandedDirs({ ...expandedDirs });
+        // Refresh tree by updating expandedDirs
+        setExpandedDirs(prev => ({ ...prev }));
       } else {
         const data = await response.json();
         alert(`Failed to copy: ${data.error}`);
@@ -240,8 +240,8 @@ const FileTree = ({ currentPath, onFileSelect, selectedFile, wsRef }) => {
       });
 
       if (response.ok) {
-        // Refresh tree
-        setExpandedDirs({ ...expandedDirs });
+        // Refresh tree by updating expandedDirs
+        setExpandedDirs(prev => ({ ...prev }));
       } else {
         const data = await response.json();
         alert(`Failed to delete: ${data.error}`);
@@ -259,7 +259,7 @@ const FileTree = ({ currentPath, onFileSelect, selectedFile, wsRef }) => {
       setLoading(false);
     };
     loadTree();
-  }, [currentPath, expandedDirs]);
+  }, [currentPath, expandedDirs, refreshTrigger]);
 
   if (loading) {
     return <div className="loading">Loading...</div>;

@@ -1,27 +1,41 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 
-const MenuBar = ({ onNewFile, onSave, onUpload, currentFile, currentDirectory, hasUnsavedChanges }) => {
-  const [showNewFileDialog, setShowNewFileDialog] = useState(false);
+const MenuBar = ({
+  onNewFile,
+  onSave,
+  onUpload,
+  onDownload,
+  currentFile,
+  currentDirectory,
+  hasUnsavedChanges,
+  showNewFileDialog,
+  onShowNewFileDialog,
+  fileInputRef
+}) => {
   const [newFilePath, setNewFilePath] = useState('');
-  const fileInputRef = useRef(null);
+
+  // Set default path when dialog opens
+  useEffect(() => {
+    if (showNewFileDialog) {
+      const defaultPath = currentDirectory === '/' ? '/' : `${currentDirectory}/`;
+      setNewFilePath(defaultPath);
+    }
+  }, [showNewFileDialog, currentDirectory]);
 
   const handleNewFile = () => {
-    setShowNewFileDialog(true);
-    // Set default path to current directory
-    const defaultPath = currentDirectory === '/' ? '/' : `${currentDirectory}/`;
-    setNewFilePath(defaultPath);
+    onShowNewFileDialog(true);
   };
 
   const handleCreateFile = async () => {
     if (newFilePath.trim()) {
       await onNewFile(newFilePath.trim());
-      setShowNewFileDialog(false);
+      onShowNewFileDialog(false);
       setNewFilePath('');
     }
   };
 
   const handleCancel = () => {
-    setShowNewFileDialog(false);
+    onShowNewFileDialog(false);
     setNewFilePath('');
   };
 
@@ -35,17 +49,6 @@ const MenuBar = ({ onNewFile, onSave, onUpload, currentFile, currentDirectory, h
 
   const isSaveDisabled = !currentFile || !hasUnsavedChanges;
   const saveLabel = hasUnsavedChanges ? 'Save' : 'Saved';
-
-  const handleDownload = () => {
-    if (!currentFile) return;
-    const downloadUrl = `/api/files/download?path=${encodeURIComponent(currentFile.path)}`;
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.download = currentFile.name;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   const handleUploadClick = () => {
     fileInputRef.current?.click();
@@ -67,6 +70,7 @@ const MenuBar = ({ onNewFile, onSave, onUpload, currentFile, currentDirectory, h
           <div className="menu-item" onClick={handleNewFile}>
             <span className="menu-icon">📄</span>
             <span>New File</span>
+            <span className="menu-shortcut">Ctrl+N</span>
           </div>
           <div
             className={`menu-item ${isSaveDisabled ? 'disabled' : ''}`}
@@ -78,14 +82,16 @@ const MenuBar = ({ onNewFile, onSave, onUpload, currentFile, currentDirectory, h
           </div>
           <div
             className={`menu-item ${!currentFile ? 'disabled' : ''}`}
-            onClick={currentFile ? handleDownload : null}
+            onClick={currentFile ? onDownload : null}
           >
             <span className="menu-icon">⬇️</span>
             <span>Download</span>
+            <span className="menu-shortcut">Ctrl+D</span>
           </div>
           <div className="menu-item" onClick={handleUploadClick}>
             <span className="menu-icon">⬆️</span>
             <span>Upload</span>
+            <span className="menu-shortcut">Ctrl+U</span>
           </div>
         </div>
         <div className="menu-info">

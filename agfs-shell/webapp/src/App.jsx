@@ -14,8 +14,11 @@ function App() {
   const [currentDirectory, setCurrentDirectory] = useState('/');
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [terminalHeight, setTerminalHeight] = useState(250);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [showNewFileDialog, setShowNewFileDialog] = useState(false);
   const wsRef = useRef(null);
   const editorRef = useRef(null);
+  const fileInputRef = useRef(null);
   const isResizingSidebar = useRef(false);
   const isResizingTerminal = useRef(false);
 
@@ -132,6 +135,9 @@ function App() {
       setFileContent('');
       setSavedContent('');
       setHasUnsavedChanges(false);
+
+      // Trigger file tree refresh
+      setRefreshTrigger(prev => prev + 1);
     } catch (error) {
       console.error('Error creating file:', error);
       alert('Failed to create file: ' + error.message);
@@ -147,6 +153,9 @@ function App() {
   const handleUpload = async (files) => {
     if (!files || files.length === 0) return;
 
+    let successCount = 0;
+    let failCount = 0;
+
     for (const file of files) {
       try {
         const formData = new FormData();
@@ -161,14 +170,22 @@ function App() {
         if (!response.ok) {
           const data = await response.json();
           alert(`Failed to upload ${file.name}: ${data.error}`);
+          failCount++;
+        } else {
+          successCount++;
         }
       } catch (error) {
         alert(`Failed to upload ${file.name}: ${error.message}`);
+        failCount++;
       }
     }
 
-    // Trigger a refresh of the file tree (by updating expandedDirs or similar)
-    alert(`Uploaded ${files.length} file(s) to ${currentDirectory}`);
+    // Trigger a refresh of the file tree
+    if (successCount > 0) {
+      setRefreshTrigger(prev => prev + 1);
+    }
+
+    alert(`Uploaded ${successCount} file(s) to ${currentDirectory}${failCount > 0 ? ` (${failCount} failed)` : ''}`);
   };
 
   // Handle sidebar resize
@@ -212,15 +229,68 @@ function App() {
     };
   }, []);
 
+  // Handle keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Check if Ctrl (or Cmd on Mac) is pressed
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case 'n':
+            e.preventDefault();
+            setShowNewFileDialog(true);
+            break;
+          case 's':
+            e.preventDefault();
+            if (selectedFile && hasUnsavedChanges) {
+              handleMenuSave();
+            }
+            break;
+          case 'd':
+            e.preventDefault();
+            if (selectedFile) {
+              handleDownload();
+            }
+            break;
+          case 'u':
+            e.preventDefault();
+            fileInputRef.current?.click();
+            break;
+          default:
+            break;
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedFile, hasUnsavedChanges]);
+
+  const handleDownload = () => {
+    if (!selectedFile) return;
+    const downloadUrl = `/api/files/download?path=${encodeURIComponent(selectedFile.path)}`;
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = selectedFile.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="app">
       <MenuBar
         onNewFile={handleNewFile}
         onSave={handleMenuSave}
         onUpload={handleUpload}
+        onDownload={handleDownload}
         currentFile={selectedFile}
         currentDirectory={currentDirectory}
         hasUnsavedChanges={hasUnsavedChanges}
+        showNewFileDialog={showNewFileDialog}
+        onShowNewFileDialog={setShowNewFileDialog}
+        fileInputRef={fileInputRef}
       />
       <div className="app-body">
         <div className="sidebar" style={{ width: `${sidebarWidth}px` }}>
@@ -230,6 +300,7 @@ function App() {
             onFileSelect={handleFileSelect}
             selectedFile={selectedFile}
             wsRef={wsRef}
+            refreshTrigger={refreshTrigger}
           />
         </div>
         <div className="resizer resizer-vertical" onMouseDown={handleSidebarMouseDown}></div>
