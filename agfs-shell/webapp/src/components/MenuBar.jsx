@@ -66,32 +66,37 @@ const MenuBar = ({
   return (
     <>
       <div className="menu-bar">
-        <div className="menu-items">
-          <div className="menu-item" onClick={handleNewFile}>
-            <span className="menu-icon">📄</span>
-            <span>New File</span>
-            <span className="menu-shortcut">Ctrl+N</span>
+        <div className="menu-left">
+          <div className="menu-logo">
+            <img src="/logo.png" alt="AGFS Logo" />
           </div>
-          <div
-            className={`menu-item ${isSaveDisabled ? 'disabled' : ''}`}
-            onClick={!isSaveDisabled ? onSave : null}
-          >
-            <span className="menu-icon">{hasUnsavedChanges ? '💾' : '✓'}</span>
-            <span>{saveLabel}</span>
-            <span className="menu-shortcut">Ctrl+S</span>
-          </div>
-          <div
-            className={`menu-item ${!currentFile ? 'disabled' : ''}`}
-            onClick={currentFile ? onDownload : null}
-          >
-            <span className="menu-icon">⬇️</span>
-            <span>Download</span>
-            <span className="menu-shortcut">Ctrl+D</span>
-          </div>
-          <div className="menu-item" onClick={handleUploadClick}>
-            <span className="menu-icon">⬆️</span>
-            <span>Upload</span>
-            <span className="menu-shortcut">Ctrl+U</span>
+          <div className="menu-items">
+            <div className="menu-item" onClick={handleNewFile}>
+              <span className="menu-icon">📄</span>
+              <span>New File</span>
+              <span className="menu-shortcut">Ctrl+N</span>
+            </div>
+            <div
+              className={`menu-item ${isSaveDisabled ? 'disabled' : ''}`}
+              onClick={!isSaveDisabled ? onSave : null}
+            >
+              <span className="menu-icon">{hasUnsavedChanges ? '💾' : '✓'}</span>
+              <span>{saveLabel}</span>
+              <span className="menu-shortcut">Ctrl+S</span>
+            </div>
+            <div
+              className={`menu-item ${!currentFile ? 'disabled' : ''}`}
+              onClick={currentFile ? onDownload : null}
+            >
+              <span className="menu-icon">⬇️</span>
+              <span>Download</span>
+              <span className="menu-shortcut">Ctrl+D</span>
+            </div>
+            <div className="menu-item" onClick={handleUploadClick}>
+              <span className="menu-icon">⬆️</span>
+              <span>Upload</span>
+              <span className="menu-shortcut">Ctrl+U</span>
+            </div>
           </div>
         </div>
         <div className="menu-info">
