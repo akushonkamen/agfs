@@ -120,9 +120,11 @@ class Shell:
     def _strip_comment(self, line: str) -> str:
         """
         Remove comments from a command line
-        - Lines starting with # are treated as full comments
-        - Inline comments (# after command) are removed
-        - # inside quotes (single or double) are preserved
+        - Lines starting with # or // are treated as full comments
+        - Inline comments (# or // after command) are removed
+        - Comment markers inside quotes are preserved
+
+        Now uses the robust lexer module for consistent parsing.
 
         Args:
             line: Command line string
@@ -130,51 +132,52 @@ class Shell:
         Returns:
             Line with comments removed
         """
-        # Empty line or full-line comment
+        from .lexer import strip_comments, QuoteTracker
+
+        # Empty line check
         stripped = line.lstrip()
-        if not stripped or stripped.startswith('#'):
+        if not stripped:
             return ''
 
-        # Process character by character to handle quotes properly
-        result = []
-        in_single_quote = False
-        in_double_quote = False
-        escape_next = False
+        # Check for // comments (full line)
+        if stripped.startswith('//'):
+            return ''
 
-        for i, char in enumerate(line):
-            if escape_next:
-                result.append(char)
-                escape_next = False
-                continue
+        # Strip inline // comments (respecting quotes)
+        if '//' in line:
+            tracker = QuoteTracker()
+            for i in range(len(line) - 1):
+                tracker.process_char(line[i])
+                if line[i:i+2] == '//' and not tracker.is_quoted():
+                    line = line[:i]
+                    break
 
-            if char == '\\':
-                result.append(char)
-                escape_next = True
-                continue
+        # Strip # comments using lexer (also respects quotes)
+        return strip_comments(line, comment_chars='#')
 
-            # Track quote state
-            if char == '"' and not in_single_quote:
-                in_double_quote = not in_double_quote
-                result.append(char)
-            elif char == "'" and not in_double_quote:
-                in_single_quote = not in_single_quote
-                result.append(char)
-            elif char == '#' and not in_single_quote and not in_double_quote:
-                # Found comment start outside quotes - stop here
-                break
-            else:
-                result.append(char)
-
-        return ''.join(result).rstrip()
-
-    def _expand_variables_without_command_sub(self, text: str) -> str:
+    def _expand_basic_variables(self, text: str) -> str:
         """
-        Expand environment variables but NOT command substitutions
-        Used in command substitution to avoid infinite recursion
+        Core variable expansion logic (shared by all expansion methods)
+
+        Expands:
+        - Special variables: $?, $#, $@, $0
+        - Braced variables: ${VAR}
+        - Positional parameters: $1, $2, ...
+        - Simple variables: $VAR
+
+        Does NOT expand:
+        - Arithmetic: $((expr))
+        - Command substitution: $(cmd), `cmd`
+
+        Args:
+            text: Text containing variable references
+
+        Returns:
+            Text with variables expanded
         """
         import re
 
-        # First, expand special variables
+        # First, expand special variables (in specific order to avoid conflicts)
         text = text.replace('$?', self.env.get('?', '0'))
         text = text.replace('$#', self.env.get('#', '0'))
         text = text.replace('$@', self.env.get('@', ''))
@@ -203,29 +206,212 @@ class Shell:
 
         return text
 
+    def _expand_variables_without_command_sub(self, text: str) -> str:
+        """
+        Expand environment variables but NOT command substitutions
+        Used in command substitution to avoid infinite recursion
+
+        This is now a thin wrapper around _expand_basic_variables()
+        """
+        return self._expand_basic_variables(text)
+
+    def _safe_eval_arithmetic(self, expr: str) -> int:
+        """
+        Safely evaluate an arithmetic expression without using eval()
+
+        Supports: +, -, *, /, %, ** (power), and parentheses
+        Only allows integers and these operators - no function calls or imports
+
+        Args:
+            expr: Arithmetic expression string (e.g., "5 + 3 * 2")
+
+        Returns:
+            Integer result of evaluation
+        """
+        import ast
+        import operator
+
+        # Map of allowed operators
+        ALLOWED_OPS = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.FloorDiv: operator.floordiv,  # // operator
+            ast.Div: operator.truediv,        # / operator
+            ast.Mod: operator.mod,
+            ast.Pow: operator.pow,
+            ast.USub: operator.neg,           # Unary minus
+            ast.UAdd: operator.pos,           # Unary plus
+        }
+
+        def eval_node(node):
+            """Recursively evaluate AST nodes"""
+            if isinstance(node, ast.Constant):
+                # Python 3.8+ uses ast.Constant for numbers
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                else:
+                    raise ValueError(f"Only numeric constants allowed, got {type(node.value)}")
+            elif isinstance(node, ast.Num):
+                # Python 3.7 and earlier use ast.Num
+                return node.n
+            elif isinstance(node, ast.BinOp):
+                # Binary operation (e.g., 5 + 3)
+                if type(node.op) not in ALLOWED_OPS:
+                    raise ValueError(f"Operator {type(node.op).__name__} not allowed")
+                left = eval_node(node.left)
+                right = eval_node(node.right)
+                return ALLOWED_OPS[type(node.op)](left, right)
+            elif isinstance(node, ast.UnaryOp):
+                # Unary operation (e.g., -5)
+                if type(node.op) not in ALLOWED_OPS:
+                    raise ValueError(f"Operator {type(node.op).__name__} not allowed")
+                operand = eval_node(node.operand)
+                return ALLOWED_OPS[type(node.op)](operand)
+            else:
+                raise ValueError(f"Node type {type(node).__name__} not allowed")
+
+        try:
+            # Strip whitespace before parsing
+            expr = expr.strip()
+
+            # Parse the expression into an AST
+            tree = ast.parse(expr, mode='eval')
+
+            # Evaluate the AST safely
+            result = eval_node(tree.body)
+
+            # Return as integer (bash arithmetic uses integers)
+            return int(result)
+        except (SyntaxError, ValueError, ZeroDivisionError) as e:
+            # If evaluation fails, return 0 (bash behavior)
+            return 0
+        except Exception:
+            # Catch any unexpected errors and return 0
+            return 0
+
     def _expand_variables(self, text: str) -> str:
         """
-        Expand environment variables and command substitutions in text
-        Supports: $VAR, ${VAR}, $(command), `command`, and special variables:
-        - $? : exit code of last command
-        - $1, $2, ... : script/function arguments
-        - $# : number of arguments
-        - $@ : all arguments as string
+        Expand ALL variable types and command substitutions
+
+        Supports:
+        - Special variables: $?, $#, $@, $0
+        - Simple variables: $VAR
+        - Braced variables: ${VAR}
+        - Positional parameters: $1, $2, ...
+        - Arithmetic expressions: $((expr))
+        - Command substitution: $(command), `command`
+
+        Returns:
+            Text with all expansions applied
         """
         import re
 
-        # First, expand special variables (in specific order to avoid conflicts)
-        # $? - exit code of last command
-        text = text.replace('$?', self.env.get('?', '0'))
-        # $# - number of arguments (must be before $0 to avoid conflict)
-        text = text.replace('$#', self.env.get('#', '0'))
-        # $@ - all arguments
-        text = text.replace('$@', self.env.get('@', ''))
-        # $0 - script name (do this after $# to avoid conflicts)
-        text = text.replace('$0', self.env.get('0', ''))
+        # Step 1: Expand command substitutions FIRST: $(command) and `command`
+        # This must be done BEFORE arithmetic to allow $(cmd) inside $((arithmetic))
+        def replace_command_subst(command):
+            """Execute a command substitution and return its output"""
+            return self._execute_command_substitution(command)
 
-        # First, expand arithmetic expressions: $((expression))
-        # This must be done BEFORE $(command) to avoid conflicts
+        def find_innermost_command_subst(text, start_pos=0):
+            """
+            Find the position of the innermost $(command) substitution.
+            Returns (start, end, command) or None if no substitution found.
+            """
+            i = start_pos
+            while i < len(text) - 1:
+                if text[i:i+2] == '$(':
+                    # Check if this is $((
+                    if i < len(text) - 2 and text[i:i+3] == '$((':
+                        i += 1
+                        continue
+
+                    # Found a $( - scan to find matching )
+                    start = i
+                    i += 2
+                    depth = 1
+                    cmd_start = i
+
+                    in_single_quote = False
+                    in_double_quote = False
+                    escape_next = False
+                    has_nested = False
+
+                    while i < len(text) and depth > 0:
+                        char = text[i]
+
+                        if escape_next:
+                            escape_next = False
+                            i += 1
+                            continue
+
+                        if char == '\\':
+                            escape_next = True
+                            i += 1
+                            continue
+
+                        if char == '"' and not in_single_quote:
+                            in_double_quote = not in_double_quote
+                        elif char == "'" and not in_double_quote:
+                            in_single_quote = not in_single_quote
+                        elif not in_single_quote and not in_double_quote:
+                            # Check for nested $(
+                            if i < len(text) - 1 and text[i:i+2] == '$(':
+                                if i >= len(text) - 2 or text[i:i+3] != '$((':
+                                    has_nested = True
+
+                            if char == '(':
+                                depth += 1
+                            elif char == ')':
+                                depth -= 1
+
+                        i += 1
+
+                    if depth == 0:
+                        command = text[cmd_start:i-1]
+
+                        # If this has nested substitutions, recurse to find the innermost
+                        if has_nested:
+                            nested_result = find_innermost_command_subst(text, cmd_start)
+                            if nested_result:
+                                return nested_result
+
+                        # This is innermost (no nested substitutions)
+                        return (start, i, command)
+                else:
+                    i += 1
+
+            return None
+
+        def find_and_replace_command_subst(text):
+            """
+            Find and replace $(command) patterns, processing from innermost to outermost
+            """
+            max_iterations = 10
+            for iteration in range(max_iterations):
+                result = find_innermost_command_subst(text)
+
+                if result is None:
+                    # No more substitutions
+                    break
+
+                start, end, command = result
+                replacement = replace_command_subst(command)
+                text = text[:start] + replacement + text[end:]
+
+            return text
+
+        text = find_and_replace_command_subst(text)
+
+        # Process `...` command substitution (backticks)
+        def replace_backtick_subst(match):
+            command = match.group(1)
+            return self._execute_command_substitution(command)
+
+        text = re.sub(r'`([^`]+)`', replace_backtick_subst, text)
+
+        # Step 2: Expand arithmetic expressions $((expr))
+        # This is done AFTER command substitution to allow $(cmd) inside arithmetic
         def replace_arithmetic(match):
             expr = match.group(1)
             try:
@@ -262,9 +448,10 @@ class Shell:
                             var_value = '0'
                         expanded_expr = expanded_expr.replace(var_name, var_value)
 
-                # Evaluate the arithmetic expression
-                result = eval(expanded_expr)
-                return str(int(result))
+                # Safely evaluate the arithmetic expression using AST parser
+                # This replaces the dangerous eval() call with a secure alternative
+                result = self._safe_eval_arithmetic(expanded_expr)
+                return str(result)
             except Exception as e:
                 # If evaluation fails, return 0
                 return '0'
@@ -312,43 +499,9 @@ class Shell:
 
         text = find_and_replace_arithmetic(text)
 
-        # Then, expand command substitutions: $(command) and `command`
-        # Process $(...) command substitution
-        def replace_command_subst(match):
-            command = match.group(1)
-            return self._execute_command_substitution(command)
-
-        text = re.sub(r'\$\(([^)]+)\)', replace_command_subst, text)
-
-        # Process `...` command substitution (backticks)
-        def replace_backtick_subst(match):
-            command = match.group(1)
-            return self._execute_command_substitution(command)
-
-        text = re.sub(r'`([^`]+)`', replace_backtick_subst, text)
-
-        # Then expand ${VAR} (higher priority than $VAR)
-        # Supports: ${VAR}, ${1}, ${2}, etc.
-        def replace_braced(match):
-            var_name = match.group(1)
-            return self.env.get(var_name, '')
-
-        text = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*|\d+)\}', replace_braced, text)
-
-        # Finally expand $VAR and $1, $2, etc.
-        # First expand positional parameters ($1, $2, ...)
-        def replace_positional(match):
-            var_name = match.group(1)
-            return self.env.get(var_name, '')
-
-        text = re.sub(r'\$(\d+)', replace_positional, text)
-
-        # Then expand regular variables ($VAR)
-        def replace_simple(match):
-            var_name = match.group(1)
-            return self.env.get(var_name, '')
-
-        text = re.sub(r'\$([A-Za-z_][A-Za-z0-9_]*)', replace_simple, text)
+        # Step 3: Expand basic variables ($VAR, ${VAR}, $1, etc.)
+        # Use shared expansion logic to avoid code duplication
+        text = self._expand_basic_variables(text)
 
         return text
 
