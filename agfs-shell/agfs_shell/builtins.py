@@ -6,6 +6,7 @@ import subprocess
 from typing import List
 from .process import Process
 from .command_decorators import command
+from .exit_codes import EXIT_CODE_BREAK, EXIT_CODE_CONTINUE
 
 
 def _mode_to_rwx(mode: int) -> str:
@@ -2691,6 +2692,64 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
 
 
 @command()
+def cmd_basename(process: Process) -> int:
+    """
+    Extract filename from path
+    Usage: basename PATH [SUFFIX]
+
+    Examples:
+        basename /local/path/to/file.txt         # file.txt
+        basename /local/path/to/file.txt .txt    # file
+    """
+    if not process.args:
+        process.stderr.write("basename: missing operand\n")
+        process.stderr.write("Usage: basename PATH [SUFFIX]\n")
+        return 1
+
+    path = process.args[0]
+    suffix = process.args[1] if len(process.args) > 1 else None
+
+    # Extract basename
+    basename = os.path.basename(path)
+
+    # Remove suffix if provided
+    if suffix and basename.endswith(suffix):
+        basename = basename[:-len(suffix)]
+
+    process.stdout.write(basename + '\n')
+    return 0
+
+
+@command()
+def cmd_dirname(process: Process) -> int:
+    """
+    Extract directory from path
+    Usage: dirname PATH
+
+    Examples:
+        dirname /local/path/to/file.txt    # /local/path/to
+        dirname /local/file.txt             # /local
+        dirname file.txt                    # .
+    """
+    if not process.args:
+        process.stderr.write("dirname: missing operand\n")
+        process.stderr.write("Usage: dirname PATH\n")
+        return 1
+
+    path = process.args[0]
+
+    # Extract dirname
+    dirname = os.path.dirname(path)
+
+    # If dirname is empty, use '.'
+    if not dirname:
+        dirname = '.'
+
+    process.stdout.write(dirname + '\n')
+    return 0
+
+
+@command()
 def cmd_help(process: Process) -> int:
     """
     Display help information for built-in commands
@@ -2994,9 +3053,9 @@ def cmd_break(process: Process) -> int:
         done
         # Output: 1, 2 (stops at 3)
     """
-    # Return special exit code -996 to signal break
+    # Return special exit code to signal break
     # This will be caught by execute_for_loop
-    return -996
+    return EXIT_CODE_BREAK
 
 
 @command()
@@ -3018,9 +3077,9 @@ def cmd_continue(process: Process) -> int:
         done
         # Output: 1, 2, 4, 5 (skips 3)
     """
-    # Return special exit code -995 to signal continue
+    # Return special exit code to signal continue
     # This will be caught by execute_for_loop
-    return -995
+    return EXIT_CODE_CONTINUE
 
 
 @command()
@@ -3263,6 +3322,8 @@ BUILTINS = {
     'touch': cmd_touch,
     'rm': cmd_rm,
     'mv': cmd_mv,
+    'basename': cmd_basename,
+    'dirname': cmd_dirname,
     'export': cmd_export,
     'env': cmd_env,
     'unset': cmd_unset,

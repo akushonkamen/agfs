@@ -5,6 +5,13 @@ import os
 import argparse
 from .shell import Shell
 from .config import Config
+from .exit_codes import (
+    EXIT_CODE_CONTINUE,
+    EXIT_CODE_BREAK,
+    EXIT_CODE_FOR_LOOP_NEEDED,
+    EXIT_CODE_IF_STATEMENT_NEEDED,
+    EXIT_CODE_HEREDOC_NEEDED
+)
 
 
 def execute_script_file(shell, script_path, script_args=None):
@@ -47,7 +54,7 @@ def execute_script_file(shell, script_path, script_args=None):
                 exit_code = shell.execute(line)
 
                 # Check if for-loop needs to be collected
-                if exit_code == -997:
+                if exit_code == EXIT_CODE_FOR_LOOP_NEEDED:
                     # Collect for/do/done loop
                     for_lines = [line]
                     for_depth = 1  # Track nesting depth
@@ -55,10 +62,12 @@ def execute_script_file(shell, script_path, script_args=None):
                     while i < len(lines):
                         next_line = lines[i].strip()
                         for_lines.append(next_line)
+                        # Strip comments before checking keywords
+                        next_line_no_comment = shell._strip_comment(next_line).strip()
                         # Count nested for loops
-                        if next_line.startswith('for '):
+                        if next_line_no_comment.startswith('for '):
                             for_depth += 1
-                        elif next_line == 'done':
+                        elif next_line_no_comment == 'done':
                             for_depth -= 1
                             if for_depth == 0:
                                 break
@@ -66,11 +75,15 @@ def execute_script_file(shell, script_path, script_args=None):
 
                     # Execute the for loop
                     exit_code = shell.execute_for_loop(for_lines)
-                    if exit_code != 0:
+                    # continue/break are normal control flow, not errors
+                    if exit_code != 0 and exit_code not in [EXIT_CODE_CONTINUE, EXIT_CODE_BREAK]:
                         sys.stderr.write(f"Error at line {line_num}: for loop failed with exit code {exit_code}\n")
                         return exit_code
+                    # Reset control flow codes to 0 for script execution
+                    if exit_code in [EXIT_CODE_CONTINUE, EXIT_CODE_BREAK]:
+                        exit_code = 0
                 # Check if if-statement needs to be collected
-                elif exit_code == -998:
+                elif exit_code == EXIT_CODE_IF_STATEMENT_NEEDED:
                     # Collect if/then/else/fi statement with depth tracking
                     if_lines = [line]
                     if_depth = 1  # Track nesting depth
@@ -78,10 +91,12 @@ def execute_script_file(shell, script_path, script_args=None):
                     while i < len(lines):
                         next_line = lines[i].strip()
                         if_lines.append(next_line)
+                        # Strip comments before checking keywords
+                        next_line_no_comment = shell._strip_comment(next_line).strip()
                         # Track nested if statements
-                        if next_line.startswith('if '):
+                        if next_line_no_comment.startswith('if '):
                             if_depth += 1
-                        elif next_line == 'fi':
+                        elif next_line_no_comment == 'fi':
                             if_depth -= 1
                             if if_depth == 0:
                                 break
@@ -246,7 +261,11 @@ def main():
             for cmd in commands:
                 exit_code = shell.execute(cmd, stdin_data=stdin_data)
                 stdin_data = None  # Only first command gets stdin
-                if exit_code != 0 and exit_code not in [-997, -998, -999]:
+                if exit_code != 0 and exit_code not in [
+                    EXIT_CODE_FOR_LOOP_NEEDED,
+                    EXIT_CODE_IF_STATEMENT_NEEDED,
+                    EXIT_CODE_HEREDOC_NEEDED
+                ]:
                     # Stop on error (unless it's a special code)
                     break
             sys.exit(exit_code)

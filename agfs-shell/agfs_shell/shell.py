@@ -13,6 +13,13 @@ from .filesystem import AGFSFileSystem
 from .command_decorators import CommandMetadata
 from pyagfs import AGFSClientError
 from . import __version__
+from .exit_codes import (
+    EXIT_CODE_CONTINUE,
+    EXIT_CODE_BREAK,
+    EXIT_CODE_FOR_LOOP_NEEDED,
+    EXIT_CODE_IF_STATEMENT_NEEDED,
+    EXIT_CODE_HEREDOC_NEEDED
+)
 
 
 class Shell:
@@ -46,7 +53,11 @@ class Shell:
 
         # Parse and execute the command, capturing stdout
         try:
-            # Parse the command (no variable expansion to avoid recursion)
+            # Expand variables in the command first
+            # But skip command substitution expansion to avoid infinite recursion
+            command = self._expand_variables_without_command_sub(command)
+
+            # Parse the command
             commands, redirections = self.parser.parse_command_line(command)
             if not commands:
                 return ''
@@ -85,13 +96,15 @@ class Shell:
                 process.cwd = self.cwd
                 processes.append(process)
 
-            # Connect pipeline
-            for i in range(len(processes) - 1):
-                output = processes[i].stdout
-                processes[i + 1].stdin = InputStream.from_stream(output)
+            # Execute pipeline sequentially, like Pipeline class
+            for i, process in enumerate(processes):
+                # If this is not the first process, connect previous stdout to this stdin
+                if i > 0:
+                    prev_process = processes[i - 1]
+                    prev_output = prev_process.get_stdout()
+                    process.stdin = InputStream.from_bytes(prev_output)
 
-            # Execute pipeline
-            for process in processes:
+                # Execute the process
                 process.execute()
 
             # Get output from last process
@@ -153,6 +166,42 @@ class Shell:
                 result.append(char)
 
         return ''.join(result).rstrip()
+
+    def _expand_variables_without_command_sub(self, text: str) -> str:
+        """
+        Expand environment variables but NOT command substitutions
+        Used in command substitution to avoid infinite recursion
+        """
+        import re
+
+        # First, expand special variables
+        text = text.replace('$?', self.env.get('?', '0'))
+        text = text.replace('$#', self.env.get('#', '0'))
+        text = text.replace('$@', self.env.get('@', ''))
+        text = text.replace('$0', self.env.get('0', ''))
+
+        # Expand ${VAR}
+        def replace_braced(match):
+            var_name = match.group(1)
+            return self.env.get(var_name, '')
+
+        text = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*|\d+)\}', replace_braced, text)
+
+        # Expand $1, $2, etc.
+        def replace_positional(match):
+            var_name = match.group(1)
+            return self.env.get(var_name, '')
+
+        text = re.sub(r'\$(\d+)', replace_positional, text)
+
+        # Expand $VAR
+        def replace_simple(match):
+            var_name = match.group(1)
+            return self.env.get(var_name, '')
+
+        text = re.sub(r'\$([A-Za-z_][A-Za-z0-9_]*)', replace_simple, text)
+
+        return text
 
     def _expand_variables(self, text: str) -> str:
         """
@@ -517,11 +566,11 @@ class Shell:
                     # Execute the nested for loop
                     last_exit_code = self.execute_for_loop(nested_for_lines)
                     # If nested loop returned break, propagate it up
-                    if last_exit_code == -996:
+                    if last_exit_code == EXIT_CODE_BREAK:
                         return last_exit_code
                     # If nested loop returned continue, it only affects the nested loop
                     # so we reset it to 0
-                    if last_exit_code == -995:
+                    if last_exit_code == EXIT_CODE_CONTINUE:
                         last_exit_code = 0
                 # Check if this is a nested if statement
                 elif cmd.strip().startswith('if '):
@@ -543,20 +592,20 @@ class Shell:
                     # Execute the nested if statement
                     last_exit_code = self.execute_if_statement(nested_if_lines)
                     # Check for break or continue from within if statement
-                    if last_exit_code == -996:
+                    if last_exit_code == EXIT_CODE_BREAK:
                         # break: exit the for loop
                         return last_exit_code
-                    elif last_exit_code == -995:
+                    elif last_exit_code == EXIT_CODE_CONTINUE:
                         # continue: skip to next iteration
                         break  # Break out of the while loop (commands in current iteration)
                 else:
                     # Regular command
                     last_exit_code = self.execute(cmd)
                     # Check for break or continue
-                    if last_exit_code == -996:
+                    if last_exit_code == EXIT_CODE_BREAK:
                         # break: exit the for loop
                         return last_exit_code
-                    elif last_exit_code == -995:
+                    elif last_exit_code == EXIT_CODE_CONTINUE:
                         # continue: skip to next iteration
                         break  # Break out of the while loop (commands in current iteration)
 
@@ -592,24 +641,27 @@ class Shell:
             if not line or line.startswith('#'):
                 continue
 
-            if line == 'done':
+            # Strip comments before checking keywords
+            line_no_comment = self._strip_comment(line).strip()
+
+            if line_no_comment == 'done':
                 # End of for loop
                 break
-            elif line == 'do':
+            elif line_no_comment == 'do':
                 state = 'do'
-            elif line.startswith('do '):
+            elif line_no_comment.startswith('do '):
                 # 'do' with command on same line
                 state = 'do'
-                cmd_after_do = line[3:].strip()
+                cmd_after_do = line_no_comment[3:].strip()
                 if cmd_after_do:
                     result['commands'].append(cmd_after_do)
-            elif line.startswith('for '):
+            elif line_no_comment.startswith('for '):
                 # Only parse the FIRST for statement
                 # Nested for loops should be treated as commands
                 if not first_for_parsed:
                     # Parse: for var in item1 item2 item3
                     # or: for var in item1 item2 item3; do
-                    parts = line[4:].strip()
+                    parts = line_no_comment[4:].strip()
 
                     # Remove trailing '; do' or 'do' if present
                     if parts.endswith('; do'):
@@ -666,7 +718,9 @@ class Shell:
                         while i < len(lines):
                             nested_line = lines[i].strip()
                             result['commands'].append(nested_line)
-                            if nested_line == 'done':
+                            # Strip comments before checking for 'done'
+                            nested_line_no_comment = self._strip_comment(nested_line).strip()
+                            if nested_line_no_comment == 'done':
                                 break
                             i += 1
             else:
@@ -714,7 +768,7 @@ class Shell:
                 for cmd in commands_block:
                     last_exit_code = self.execute(cmd)
                     # If break or continue, return immediately to propagate to for loop
-                    if last_exit_code in [-995, -996]:
+                    if last_exit_code in [EXIT_CODE_CONTINUE, EXIT_CODE_BREAK]:
                         return last_exit_code
                 return last_exit_code
 
@@ -724,7 +778,7 @@ class Shell:
             for cmd in parsed['else_block']:
                 last_exit_code = self.execute(cmd)
                 # If break or continue, return immediately to propagate to for loop
-                if last_exit_code in [-995, -996]:
+                if last_exit_code in [EXIT_CODE_CONTINUE, EXIT_CODE_BREAK]:
                     return last_exit_code
             return last_exit_code
 
@@ -861,8 +915,8 @@ class Shell:
                 return self.execute_for_loop(lines)
             else:
                 # Multi-line for loop - signal to REPL to collect more lines
-                # Return special code -997 to signal for loop collection needed
-                return -997
+                # Return special code to signal for loop collection needed
+                return EXIT_CODE_FOR_LOOP_NEEDED
 
         # Check for if statement (special handling required)
         if command_line.strip().startswith('if '):
@@ -878,8 +932,8 @@ class Shell:
                 return self.execute_if_statement(lines)
             else:
                 # Multi-line if statement - signal to REPL to collect more lines
-                # Return special code -998 to signal if statement collection needed
-                return -998
+                # Return special code to signal if statement collection needed
+                return EXIT_CODE_IF_STATEMENT_NEEDED
 
         # Check for variable assignment (VAR=value)
         if '=' in command_line and not command_line.strip().startswith('='):
@@ -913,8 +967,8 @@ class Shell:
         # If heredoc is detected but no data provided, return special code to signal REPL
         # to read heredoc content
         if 'heredoc_delimiter' in redirections and heredoc_data is None:
-            # Return special code -999 to signal that heredoc data is needed
-            return -999
+            # Return special code to signal that heredoc data is needed
+            return EXIT_CODE_HEREDOC_NEEDED
 
         # If heredoc data is provided, use it as stdin
         if heredoc_data is not None:
@@ -1327,7 +1381,7 @@ class Shell:
                     exit_code = self.execute(command)
 
                     # Check if for-loop is needed
-                    if exit_code == -997:
+                    if exit_code == EXIT_CODE_FOR_LOOP_NEEDED:
                         # Collect for/do/done loop
                         for_lines = [command]
                         for_depth = 1  # Track nesting depth
@@ -1357,7 +1411,7 @@ class Shell:
                         self.env['?'] = str(exit_code)
 
                     # Check if if-statement is needed
-                    elif exit_code == -998:
+                    elif exit_code == EXIT_CODE_IF_STATEMENT_NEEDED:
                         # Collect if/then/else/fi statement
                         if_lines = [command]
                         try:
@@ -1381,7 +1435,7 @@ class Shell:
                         self.env['?'] = str(exit_code)
 
                     # Check if heredoc is needed
-                    elif exit_code == -999:
+                    elif exit_code == EXIT_CODE_HEREDOC_NEEDED:
                         # Parse command to get heredoc delimiter
                         commands, redirections = self.parser.parse_command_line(command)
                         if 'heredoc_delimiter' in redirections:
@@ -1415,9 +1469,13 @@ class Shell:
                     else:
                         # Normal command execution - update $?
                         # Skip special exit codes for internal use
-                        # -997: for loop collection, -998: if collection, -999: heredoc
-                        # -996: break, -995: continue
-                        if exit_code not in [-995, -996, -997, -998, -999]:
+                        if exit_code not in [
+                            EXIT_CODE_CONTINUE,
+                            EXIT_CODE_BREAK,
+                            EXIT_CODE_FOR_LOOP_NEEDED,
+                            EXIT_CODE_IF_STATEMENT_NEEDED,
+                            EXIT_CODE_HEREDOC_NEEDED
+                        ]:
                             self.env['?'] = str(exit_code)
 
                 except KeyboardInterrupt:
