@@ -25,9 +25,18 @@ func (b *TiDBBackend) Initialize(cfg map[string]interface{}) (*sql.DB, error) {
 	dsnStr := config.GetStringConfig(cfg, "dsn", "")
 	dsnHasTLS := strings.Contains(dsnStr, "tls=")
 
+	// Extract TLS config name from DSN if present
+	tlsConfigName := "tidb-sqlfs2"
+	if dsnHasTLS {
+		// Extract tls parameter value from DSN: tls=value
+		re := regexp.MustCompile(`tls=([^&]+)`)
+		if matches := re.FindStringSubmatch(dsnStr); len(matches) > 1 {
+			tlsConfigName = matches[1]
+		}
+	}
+
 	// Register TLS configuration if needed
 	enableTLS := config.GetBoolConfig(cfg, "enable_tls", false) || dsnHasTLS
-	tlsConfigName := "tidb-sqlfs2"
 
 	if enableTLS {
 		// Get TLS configuration
