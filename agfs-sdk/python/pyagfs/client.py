@@ -430,7 +430,39 @@ class AGFSClient:
             )
             response.raise_for_status()
             data = response.json()
-            return data.get("loaded_plugins", [])
+
+            # Support both old and new API formats
+            if "loaded_plugins" in data:
+                # Old format
+                return data.get("loaded_plugins", [])
+            elif "plugins" in data:
+                # New format - extract library paths from external plugins only
+                plugins = data.get("plugins", [])
+                return [p.get("library_path", "") for p in plugins
+                       if p.get("is_external", False) and p.get("library_path")]
+            else:
+                return []
+        except Exception as e:
+            self._handle_request_error(e)
+
+    def get_plugins_info(self) -> List[dict]:
+        """Get detailed information about all loaded plugins
+
+        Returns:
+            List of plugin info dictionaries with keys:
+            - name: Plugin name
+            - library_path: Path to plugin library (for external plugins)
+            - is_external: Whether this is an external plugin
+            - mounted_paths: List of mount point information
+        """
+        try:
+            response = self.session.get(
+                f"{self.api_base}/plugins",
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("plugins", [])
         except Exception as e:
             self._handle_request_error(e)
 

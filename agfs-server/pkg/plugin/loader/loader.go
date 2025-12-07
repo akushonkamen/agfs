@@ -51,14 +51,16 @@ type LoadedPlugin struct {
 type PluginLoader struct {
 	loadedPlugins map[string]*LoadedPlugin
 	wasmLoader    *WASMPluginLoader
+	poolConfig    api.PoolConfig // Configuration for WASM instance pools
 	mu            sync.RWMutex
 }
 
-// NewPluginLoader creates a new plugin loader
-func NewPluginLoader() *PluginLoader {
+// NewPluginLoader creates a new plugin loader with the specified pool configuration
+func NewPluginLoader(poolConfig api.PoolConfig) *PluginLoader {
 	return &PluginLoader{
 		loadedPlugins: make(map[string]*LoadedPlugin),
 		wasmLoader:    NewWASMPluginLoader(),
+		poolConfig:    poolConfig,
 	}
 }
 
@@ -137,7 +139,7 @@ func (pl *PluginLoader) LoadPluginWithType(libraryPath string, pluginType Plugin
 	// Load based on specified type
 	switch pluginType {
 	case PluginTypeWASM:
-		return pl.wasmLoader.LoadWASMPlugin(libraryPath, hostFS...)
+		return pl.wasmLoader.LoadWASMPlugin(libraryPath, pl.poolConfig, hostFS...)
 	case PluginTypeNative:
 		return pl.loadNativePlugin(libraryPath)
 	default:
@@ -322,6 +324,29 @@ func (pl *PluginLoader) GetLoadedPlugins() []string {
 	paths = append(paths, wasmPaths...)
 
 	return paths
+}
+
+// GetPluginNameToPathMap returns a map of plugin names to their library paths
+func (pl *PluginLoader) GetPluginNameToPathMap() map[string]string {
+	pl.mu.RLock()
+	defer pl.mu.RUnlock()
+
+	nameToPath := make(map[string]string)
+
+	// Add native plugins
+	for path, loaded := range pl.loadedPlugins {
+		if loaded.Plugin != nil {
+			nameToPath[loaded.Plugin.Name()] = path
+		}
+	}
+
+	// Add WASM plugins
+	wasmNameToPath := pl.wasmLoader.GetPluginNameToPathMap()
+	for name, path := range wasmNameToPath {
+		nameToPath[name] = path
+	}
+
+	return nameToPath
 }
 
 // IsLoadedWithType checks if a plugin of a specific type is currently loaded

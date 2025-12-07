@@ -716,6 +716,18 @@ AUTHOR: AGFS Server
 	return readmeContent
 }
 
+func (p *LocalFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "local_dir",
+			Type:        "string",
+			Required:    true,
+			Default:     "",
+			Description: "Local directory path to expose (must exist)",
+		},
+	}
+}
+
 func (p *LocalFSPlugin) Shutdown() error {
 	log.Infof("[localfs] Shutting down")
 	return nil

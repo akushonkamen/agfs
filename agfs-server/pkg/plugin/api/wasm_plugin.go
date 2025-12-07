@@ -5,65 +5,58 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin"
 	log "github.com/sirupsen/logrus"
 	wazeroapi "github.com/tetratelabs/wazero/api"
 )
 
 // WASMPlugin represents a plugin loaded from a WASM module
+// It uses an instance pool for concurrent access
 type WASMPlugin struct {
-	ctx        context.Context
-	module     wazeroapi.Module
-	name       string
-	fileSystem *WASMFileSystem
+	name         string
+	instancePool *WASMInstancePool
+	fileSystem   *PooledWASMFileSystem
+}
+
+// PooledWASMFileSystem implements filesystem.FileSystem using an instance pool
+type PooledWASMFileSystem struct {
+	pool *WASMInstancePool
 }
 
 // WASMFileSystem implements filesystem.FileSystem by delegating to WASM functions
+// This version is used for individual instances within the pool
 type WASMFileSystem struct {
 	ctx    context.Context
 	module wazeroapi.Module
+	mu     *sync.Mutex // Mutex for single instance (can be nil if instance is not shared)
 }
 
-// NewWASMPlugin creates a new WASM plugin wrapper
-func NewWASMPlugin(ctx context.Context, module wazeroapi.Module) (*WASMPlugin, error) {
-	// Verify required functions exist
-	if module.ExportedFunction("plugin_new") == nil {
-		return nil, fmt.Errorf("WASM module missing required function: plugin_new")
-	}
-
-	// Call plugin_new to initialize the plugin
-	results, err := module.ExportedFunction("plugin_new").Call(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call plugin_new: %w", err)
-	}
-
-	if len(results) == 0 {
-		return nil, fmt.Errorf("plugin_new returned no results")
-	}
-
-	// Get plugin name
-	name := "wasm-plugin"
-	if nameFunc := module.ExportedFunction("plugin_name"); nameFunc != nil {
-		if nameResults, err := nameFunc.Call(ctx); err == nil && len(nameResults) > 0 {
-			// Read string from memory
-			if nameStr, ok := readStringFromMemory(module, uint32(nameResults[0])); ok {
-				name = nameStr
-			}
-		}
+// NewWASMPluginWithPool creates a new WASM plugin wrapper with an instance pool
+func NewWASMPluginWithPool(pool *WASMInstancePool, name string) (*WASMPlugin, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("instance pool cannot be nil")
 	}
 
 	wp := &WASMPlugin{
-		ctx:    ctx,
-		module: module,
-		name:   name,
-		fileSystem: &WASMFileSystem{
-			ctx:    ctx,
-			module: module,
+		name:         name,
+		instancePool: pool,
+		fileSystem: &PooledWASMFileSystem{
+			pool: pool,
 		},
 	}
 
 	return wp, nil
+}
+
+// NewWASMPlugin creates a new WASM plugin wrapper (legacy, for backward compatibility)
+// For new code, use NewWASMPluginWithPool for better concurrency
+func NewWASMPlugin(ctx context.Context, module wazeroapi.Module) (*WASMPlugin, error) {
+	// This is kept for backward compatibility but should be migrated to pool-based approach
+	// For now, return an error suggesting to use the pool-based approach
+	return nil, fmt.Errorf("NewWASMPlugin is deprecated, use NewWASMPluginWithPool for concurrent access")
 }
 
 // Name returns the plugin name
@@ -73,76 +66,80 @@ func (wp *WASMPlugin) Name() string {
 
 // Validate validates the plugin configuration
 func (wp *WASMPlugin) Validate(config map[string]interface{}) error {
-	validateFunc := wp.module.ExportedFunction("plugin_validate")
-	if validateFunc == nil {
-		// If validate function is not exported, assume validation passes
-		return nil
-	}
-
-	// Convert config to JSON
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	// Write config to WASM memory
-	configPtr, err := writeStringToMemory(wp.module, string(configJSON))
-	if err != nil {
-		return fmt.Errorf("failed to write config to memory: %w", err)
-	}
-
-	// Call validate function
-	results, err := validateFunc.Call(wp.ctx, uint64(configPtr))
-	if err != nil {
-		return fmt.Errorf("validate call failed: %w", err)
-	}
-
-	// Check for error return (non-zero means error)
-	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wp.module, uint32(results[0])); ok {
-			return fmt.Errorf("validation failed: %s", errMsg)
+	return wp.instancePool.Execute(func(instance *WASMModuleInstance) error {
+		validateFunc := instance.module.ExportedFunction("plugin_validate")
+		if validateFunc == nil {
+			// If validate function is not exported, assume validation passes
+			return nil
 		}
-		return fmt.Errorf("validation failed")
-	}
 
-	return nil
+		// Convert config to JSON
+		configJSON, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal config: %w", err)
+		}
+
+		// Write config to WASM memory
+		configPtr, err := writeStringToMemory(instance.module, string(configJSON))
+		if err != nil {
+			return fmt.Errorf("failed to write config to memory: %w", err)
+		}
+
+		// Call validate function
+		results, err := validateFunc.Call(wp.instancePool.ctx, uint64(configPtr))
+		if err != nil {
+			return fmt.Errorf("validate call failed: %w", err)
+		}
+
+		// Check for error return (non-zero means error)
+		if len(results) > 0 && results[0] != 0 {
+			if errMsg, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+				return fmt.Errorf("validation failed: %s", errMsg)
+			}
+			return fmt.Errorf("validation failed")
+		}
+
+		return nil
+	})
 }
 
 // Initialize initializes the plugin with configuration
 func (wp *WASMPlugin) Initialize(config map[string]interface{}) error {
-	initFunc := wp.module.ExportedFunction("plugin_initialize")
-	if initFunc == nil {
-		// If initialize function is not exported, assume initialization succeeds
-		return nil
-	}
-
-	// Convert config to JSON
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	// Write config to WASM memory
-	configPtr, err := writeStringToMemory(wp.module, string(configJSON))
-	if err != nil {
-		return fmt.Errorf("failed to write config to memory: %w", err)
-	}
-
-	// Call initialize function
-	results, err := initFunc.Call(wp.ctx, uint64(configPtr))
-	if err != nil {
-		return fmt.Errorf("initialize call failed: %w", err)
-	}
-
-	// Check for error return
-	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wp.module, uint32(results[0])); ok {
-			return fmt.Errorf("initialization failed: %s", errMsg)
+	return wp.instancePool.Execute(func(instance *WASMModuleInstance) error {
+		initFunc := instance.module.ExportedFunction("plugin_initialize")
+		if initFunc == nil {
+			// If initialize function is not exported, assume initialization succeeds
+			return nil
 		}
-		return fmt.Errorf("initialization failed")
-	}
 
-	return nil
+		// Convert config to JSON
+		configJSON, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal config: %w", err)
+		}
+
+		// Write config to WASM memory
+		configPtr, err := writeStringToMemory(instance.module, string(configJSON))
+		if err != nil {
+			return fmt.Errorf("failed to write config to memory: %w", err)
+		}
+
+		// Call initialize function
+		results, err := initFunc.Call(wp.instancePool.ctx, uint64(configPtr))
+		if err != nil {
+			return fmt.Errorf("initialize call failed: %w", err)
+		}
+
+		// Check for error return
+		if len(results) > 0 && results[0] != 0 {
+			if errMsg, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+				return fmt.Errorf("initialization failed: %s", errMsg)
+			}
+			return fmt.Errorf("initialization failed")
+		}
+
+		return nil
+	})
 }
 
 // GetFileSystem returns the file system implementation
@@ -152,47 +149,174 @@ func (wp *WASMPlugin) GetFileSystem() filesystem.FileSystem {
 
 // GetReadme returns the plugin README
 func (wp *WASMPlugin) GetReadme() string {
-	readmeFunc := wp.module.ExportedFunction("plugin_get_readme")
-	if readmeFunc == nil {
-		return ""
-	}
-
-	results, err := readmeFunc.Call(wp.ctx)
-	if err != nil {
-		log.Warnf("Failed to get readme: %v", err)
-		return ""
-	}
-
-	if len(results) > 0 {
-		if readme, ok := readStringFromMemory(wp.module, uint32(results[0])); ok {
-			return readme
+	var readme string
+	wp.instancePool.Execute(func(instance *WASMModuleInstance) error {
+		readmeFunc := instance.module.ExportedFunction("plugin_get_readme")
+		if readmeFunc == nil {
+			readme = ""
+			return nil
 		}
-	}
 
-	return ""
+		results, err := readmeFunc.Call(wp.instancePool.ctx)
+		if err != nil {
+			log.Warnf("Failed to get readme: %v", err)
+			readme = ""
+			return nil
+		}
+
+		if len(results) > 0 {
+			if r, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+				readme = r
+			}
+		}
+
+		return nil
+	})
+
+	return readme
+}
+
+// GetConfigParams returns the list of configuration parameters
+func (wp *WASMPlugin) GetConfigParams() []plugin.ConfigParameter {
+	var params []plugin.ConfigParameter
+	wp.instancePool.Execute(func(instance *WASMModuleInstance) error {
+		// Check if the plugin exports plugin_get_config_params
+		configParamsFunc := instance.module.ExportedFunction("plugin_get_config_params")
+		if configParamsFunc == nil {
+			// Plugin doesn't export config params, return empty list
+			params = []plugin.ConfigParameter{}
+			return nil
+		}
+
+		// Call the function to get config params JSON
+		results, err := configParamsFunc.Call(wp.instancePool.ctx)
+		if err != nil {
+			log.Warnf("Failed to get config params: %v", err)
+			params = []plugin.ConfigParameter{}
+			return nil
+		}
+
+		if len(results) > 0 && results[0] != 0 {
+			// Read JSON string from WASM memory
+			if jsonStr, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+				// Parse JSON into ConfigParameter array
+				if err := json.Unmarshal([]byte(jsonStr), &params); err != nil {
+					log.Warnf("Failed to unmarshal config params JSON: %v", err)
+					params = []plugin.ConfigParameter{}
+					return nil
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return params
 }
 
 // Shutdown shuts down the plugin
 func (wp *WASMPlugin) Shutdown() error {
-	shutdownFunc := wp.module.ExportedFunction("plugin_shutdown")
-	if shutdownFunc == nil {
-		return nil
-	}
+	// Close the instance pool
+	return wp.instancePool.Close()
+}
 
-	results, err := shutdownFunc.Call(wp.ctx)
-	if err != nil {
-		return fmt.Errorf("shutdown call failed: %w", err)
-	}
+// PooledWASMFileSystem implementation
+// All methods delegate to the instance pool
 
-	// Check for error return
-	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wp.module, uint32(results[0])); ok {
-			return fmt.Errorf("shutdown failed: %s", errMsg)
-		}
-		return fmt.Errorf("shutdown failed")
-	}
+func (pfs *PooledWASMFileSystem) Create(path string) error {
+	return pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		return fs.Create(path)
+	})
+}
 
-	return nil
+func (pfs *PooledWASMFileSystem) Mkdir(path string, perm uint32) error {
+	return pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		return fs.Mkdir(path, perm)
+	})
+}
+
+func (pfs *PooledWASMFileSystem) Remove(path string) error {
+	return pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		return fs.Remove(path)
+	})
+}
+
+func (pfs *PooledWASMFileSystem) RemoveAll(path string) error {
+	return pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		return fs.RemoveAll(path)
+	})
+}
+
+func (pfs *PooledWASMFileSystem) Read(path string, offset int64, size int64) ([]byte, error) {
+	var data []byte
+	err := pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		var readErr error
+		data, readErr = fs.Read(path, offset, size)
+		return readErr
+	})
+	return data, err
+}
+
+func (pfs *PooledWASMFileSystem) Write(path string, data []byte) ([]byte, error) {
+	var result []byte
+	err := pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		var writeErr error
+		result, writeErr = fs.Write(path, data)
+		return writeErr
+	})
+	return result, err
+}
+
+func (pfs *PooledWASMFileSystem) ReadDir(path string) ([]filesystem.FileInfo, error) {
+	var infos []filesystem.FileInfo
+	err := pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		var readErr error
+		infos, readErr = fs.ReadDir(path)
+		return readErr
+	})
+	return infos, err
+}
+
+func (pfs *PooledWASMFileSystem) Stat(path string) (*filesystem.FileInfo, error) {
+	var info *filesystem.FileInfo
+	err := pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		var statErr error
+		info, statErr = fs.Stat(path)
+		return statErr
+	})
+	return info, err
+}
+
+func (pfs *PooledWASMFileSystem) Rename(oldPath, newPath string) error {
+	return pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		return fs.Rename(oldPath, newPath)
+	})
+}
+
+func (pfs *PooledWASMFileSystem) Chmod(path string, mode uint32) error {
+	return pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		return fs.Chmod(path, mode)
+	})
+}
+
+func (pfs *PooledWASMFileSystem) Open(path string) (io.ReadCloser, error) {
+	var reader io.ReadCloser
+	err := pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		var openErr error
+		reader, openErr = fs.Open(path)
+		return openErr
+	})
+	return reader, err
+}
+
+func (pfs *PooledWASMFileSystem) OpenWrite(path string) (io.WriteCloser, error) {
+	var writer io.WriteCloser
+	err := pfs.pool.ExecuteFS(func(fs filesystem.FileSystem) error {
+		var openErr error
+		writer, openErr = fs.OpenWrite(path)
+		return openErr
+	})
+	return writer, err
 }
 
 // WASMFileSystem implementations
@@ -303,6 +427,9 @@ func (wfs *WASMFileSystem) RemoveAll(path string) error {
 }
 
 func (wfs *WASMFileSystem) Read(path string, offset int64, size int64) ([]byte, error) {
+	wfs.mu.Lock()
+	defer wfs.mu.Unlock()
+
 	readFunc := wfs.module.ExportedFunction("fs_read")
 	if readFunc == nil {
 		return nil, fmt.Errorf("fs_read not implemented")
@@ -585,6 +712,11 @@ func (w *wasmWriteCloser) Close() error {
 }
 
 // Helper functions for memory management
+
+// ReadStringFromWASMMemory is exported for use by wasm_loader
+func ReadStringFromWASMMemory(module wazeroapi.Module, ptr uint32) (string, bool) {
+	return readStringFromMemory(module, ptr)
+}
 
 func readStringFromMemory(module wazeroapi.Module, ptr uint32) (string, bool) {
 	if ptr == 0 {

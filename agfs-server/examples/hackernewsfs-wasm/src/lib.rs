@@ -164,6 +164,18 @@ impl FileSystem for HackerNewsFS {
          etc.\n"
     }
 
+    fn config_params(&self) -> Vec<ConfigParameter> {
+        vec![
+            ConfigParameter::new(
+                "max_stories",
+                "int",
+                false,
+                "30",
+                "Maximum number of stories to fetch"
+            ),
+        ]
+    }
+
     fn initialize(&mut self, _config: &Config) -> Result<()> {
         // Fetch stories on initialization
         eprintln!("HackerNewsFS: Fetching initial stories...");

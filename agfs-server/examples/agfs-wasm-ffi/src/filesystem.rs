@@ -1,6 +1,6 @@
 //! High-level agfs filesystem trait for WASM plugins
 
-use crate::types::{Config, FileInfo, Result};
+use crate::types::{Config, ConfigParameter, FileInfo, Result};
 
 /// Filesystem trait that plugin developers should implement
 ///
@@ -13,6 +13,11 @@ pub trait FileSystem {
     /// Returns the README/documentation for this plugin
     fn readme(&self) -> &str {
         "No documentation available"
+    }
+
+    /// Returns the list of configuration parameters this plugin supports
+    fn config_params(&self) -> Vec<ConfigParameter> {
+        Vec::new()
     }
 
     /// Validate the configuration before initialization

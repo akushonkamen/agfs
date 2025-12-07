@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/c4pt0r/agfs/agfs-server/pkg/config"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/handlers"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/mountablefs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin/api"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/heartbeatfs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/hellofs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/httpfs"
@@ -203,8 +205,18 @@ func main() {
 		serverAddr = ":8080" // Default
 	}
 
+	// Create WASM instance pool configuration from config
+	wasmConfig := cfg.GetWASMConfig()
+	poolConfig := api.PoolConfig{
+		MaxInstances:        wasmConfig.InstancePoolSize,
+		InstanceMaxLifetime: time.Duration(wasmConfig.InstanceMaxLifetime) * time.Second,
+		InstanceMaxRequests: int64(wasmConfig.InstanceMaxRequests),
+		HealthCheckInterval: time.Duration(wasmConfig.HealthCheckInterval) * time.Second,
+		EnableStatistics:    wasmConfig.EnablePoolStatistics,
+	}
+
 	// Create mountable file system
-	mfs := mountablefs.NewMountableFS()
+	mfs := mountablefs.NewMountableFS(poolConfig)
 
 	// Register plugin factories for dynamic mounting
 	for pluginName, factory := range availablePlugins {

@@ -141,6 +141,10 @@ EXAMPLES:
 `
 }
 
+func (kv *KVFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{}
+}
+
 func (kv *KVFSPlugin) Shutdown() error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()

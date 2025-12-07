@@ -22,11 +22,21 @@ type ServerConfig struct {
 
 // ExternalPluginsConfig contains configuration for external plugins
 type ExternalPluginsConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	PluginDir     string   `yaml:"plugin_dir"`
-	AutoLoad      bool     `yaml:"auto_load"`
-	PluginPaths   []string `yaml:"plugin_paths"`
-	WASIMountPath string   `yaml:"wasi_mount_path"` // Directory to mount for WASI filesystem access
+	Enabled       bool              `yaml:"enabled"`
+	PluginDir     string            `yaml:"plugin_dir"`
+	AutoLoad      bool              `yaml:"auto_load"`
+	PluginPaths   []string          `yaml:"plugin_paths"`
+	WASIMountPath string            `yaml:"wasi_mount_path"` // Directory to mount for WASI filesystem access
+	WASM          WASMPluginConfig  `yaml:"wasm"`            // WASM plugin specific configuration
+}
+
+// WASMPluginConfig contains configuration for WASM plugins
+type WASMPluginConfig struct {
+	InstancePoolSize     int `yaml:"instance_pool_size"`      // Maximum concurrent instances per plugin (default: 10)
+	InstanceMaxLifetime  int `yaml:"instance_max_lifetime"`   // Maximum instance lifetime in seconds (0 = unlimited)
+	InstanceMaxRequests  int `yaml:"instance_max_requests"`   // Maximum requests per instance (0 = unlimited)
+	HealthCheckInterval  int `yaml:"health_check_interval"`   // Health check interval in seconds (0 = disabled)
+	EnablePoolStatistics bool `yaml:"enable_pool_statistics"` // Enable pool statistics collection
 }
 
 // PluginConfig can be either a single plugin or an array of plugin instances
@@ -82,4 +92,25 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) GetPluginConfig(pluginName string) (PluginConfig, bool) {
 	cfg, ok := c.Plugins[pluginName]
 	return cfg, ok
+}
+
+// GetWASMConfig returns the WASM plugin configuration with defaults applied
+func (c *Config) GetWASMConfig() WASMPluginConfig {
+	cfg := c.ExternalPlugins.WASM
+
+	// Apply defaults if not set
+	if cfg.InstancePoolSize <= 0 {
+		cfg.InstancePoolSize = 10 // Default: 10 concurrent instances
+	}
+	if cfg.InstanceMaxLifetime < 0 {
+		cfg.InstanceMaxLifetime = 0 // Default: unlimited
+	}
+	if cfg.InstanceMaxRequests < 0 {
+		cfg.InstanceMaxRequests = 0 // Default: unlimited
+	}
+	if cfg.HealthCheckInterval < 0 {
+		cfg.HealthCheckInterval = 0 // Default: disabled
+	}
+
+	return cfg
 }

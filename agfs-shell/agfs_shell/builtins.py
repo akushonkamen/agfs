@@ -1723,21 +1723,25 @@ def cmd_sleep(process: Process) -> int:
 @command()
 def cmd_plugins(process: Process) -> int:
     """
-    Manage external plugins
+    Manage AGFS plugins
 
     Usage: plugins <subcommand> [arguments]
 
     Subcommands:
+        list [-v]         List all plugins (builtin and external)
         load <path>       Load external plugin from AGFS or HTTP(S)
         unload <path>     Unload external plugin
-        list              List loaded external plugins
+
+    Options:
+        -v                Show detailed configuration parameters
 
     Path formats for load:
         <agfs_path>        - Load from AGFS (default)
         http(s)://<url>    - Load from HTTP(S) URL
 
     Examples:
-        plugins list                                  # List loaded external plugins
+        plugins list                                  # List all plugins
+        plugins list -v                               # List with config details
         plugins load /mnt/plugins/myplugin.so         # Load from AGFS
         plugins load https://example.com/myplugin.so  # Load from HTTP(S)
         plugins unload /mnt/plugins/myplugin.so       # Unload plugin
@@ -1750,9 +1754,9 @@ def cmd_plugins(process: Process) -> int:
     if len(process.args) == 0:
         process.stderr.write("Usage: plugins <subcommand> [arguments]\n")
         process.stderr.write("\nSubcommands:\n")
+        process.stderr.write("  list           - List all plugins (builtin and external)\n")
         process.stderr.write("  load <path>    - Load external plugin\n")
         process.stderr.write("  unload <path>  - Unload external plugin\n")
-        process.stderr.write("  list           - List loaded external plugins\n")
         process.stderr.write("\nPath formats for load:\n")
         process.stderr.write("  <agfs_path>      - Load from AGFS (default)\n")
         process.stderr.write("  http(s)://<url>  - Load from HTTP(S) URL\n")
@@ -1819,46 +1823,91 @@ def cmd_plugins(process: Process) -> int:
 
     elif subcommand == "list":
         try:
-            plugins = process.filesystem.client.list_plugins()
+            # Check for verbose flag
+            verbose = '-v' in process.args[1:] or '--verbose' in process.args[1:]
 
-            if not plugins:
+            # Use new API to get detailed plugin information
+            plugins_info = process.filesystem.client.get_plugins_info()
+
+            # Separate builtin and external plugins
+            builtin_plugins = [p for p in plugins_info if not p.get('is_external', False)]
+            external_plugins = [p for p in plugins_info if p.get('is_external', False)]
+
+            # Display builtin plugins
+            if builtin_plugins:
+                process.stdout.write(f"Builtin Plugins: ({len(builtin_plugins)})\n")
+                for plugin in sorted(builtin_plugins, key=lambda x: x.get('name', '')):
+                    plugin_name = plugin.get('name', 'unknown')
+                    mounted_paths = plugin.get('mounted_paths', [])
+                    config_params = plugin.get('config_params', [])
+
+                    if mounted_paths:
+                        mount_list = []
+                        for mount in mounted_paths:
+                            path = mount.get('path', '')
+                            config = mount.get('config', {})
+                            if config:
+                                mount_list.append(f"{path} (with config)")
+                            else:
+                                mount_list.append(path)
+                        process.stdout.write(f"  {plugin_name:20} -> {', '.join(mount_list)}\n")
+                    else:
+                        process.stdout.write(f"  {plugin_name:20} (not mounted)\n")
+
+                    # Show config params if verbose and available
+                    if verbose and config_params:
+                        process.stdout.write(f"    Config parameters:\n")
+                        for param in config_params:
+                            req = "*" if param.get('required', False) else " "
+                            name = param.get('name', '')
+                            ptype = param.get('type', '')
+                            default = param.get('default', '')
+                            desc = param.get('description', '')
+                            default_str = f" (default: {default})" if default else ""
+                            process.stdout.write(f"      {req} {name:20} {ptype:10} {desc}{default_str}\n")
+
+                process.stdout.write("\n")
+
+            # Display external plugins
+            if external_plugins:
+                process.stdout.write(f"External Plugins: ({len(external_plugins)})\n")
+                for plugin in sorted(external_plugins, key=lambda x: x.get('name', '')):
+                    plugin_name = plugin.get('name', 'unknown')
+                    library_path = plugin.get('library_path', '')
+                    mounted_paths = plugin.get('mounted_paths', [])
+                    config_params = plugin.get('config_params', [])
+
+                    # Extract just the filename for display
+                    filename = os.path.basename(library_path) if library_path else plugin_name
+                    process.stdout.write(f"  {filename}\n")
+                    process.stdout.write(f"    Plugin name: {plugin_name}\n")
+
+                    if mounted_paths:
+                        mount_list = []
+                        for mount in mounted_paths:
+                            path = mount.get('path', '')
+                            config = mount.get('config', {})
+                            if config:
+                                mount_list.append(f"{path} (with config)")
+                            else:
+                                mount_list.append(path)
+                        process.stdout.write(f"    Mounted at: {', '.join(mount_list)}\n")
+                    else:
+                        process.stdout.write(f"    (Not currently mounted)\n")
+
+                    # Show config params if verbose and available
+                    if verbose and config_params:
+                        process.stdout.write(f"    Config parameters:\n")
+                        for param in config_params:
+                            req = "*" if param.get('required', False) else " "
+                            name = param.get('name', '')
+                            ptype = param.get('type', '')
+                            default = param.get('default', '')
+                            desc = param.get('description', '')
+                            default_str = f" (default: {default})" if default else ""
+                            process.stdout.write(f"      {req} {name:20} {ptype:10} {desc}{default_str}\n")
+            else:
                 process.stdout.write("No external plugins loaded\n")
-                return 0
-
-            # Get mount information to correlate with loaded plugins
-            try:
-                mounts = process.filesystem.client.mounts()
-                # Build a map of plugin names to mount points
-                plugin_mounts = {}
-                for mount in mounts:
-                    plugin_name = mount.get('pluginName', '')
-                    if plugin_name:
-                        if plugin_name not in plugin_mounts:
-                            plugin_mounts[plugin_name] = []
-                        plugin_mounts[plugin_name].append(mount.get('path', ''))
-            except:
-                plugin_mounts = {}
-
-            process.stdout.write(f"Loaded External Plugins: ({len(plugins)})\n")
-            for plugin_path in plugins:
-                # Extract just the filename for display
-                filename = os.path.basename(plugin_path)
-                process.stdout.write(f"  {filename}\n")
-
-                # Try to show which plugin types are available from this file
-                # by checking if any mounts use a plugin with similar name
-                found_mounts = False
-                for plugin_name, mount_paths in plugin_mounts.items():
-                    # Check if this plugin_name might come from this file
-                    # (simple heuristic: check if filename contains plugin name or vice versa)
-                    if plugin_name.lower() in filename.lower() or filename.lower().replace('.wasm', '').replace('.so', '').replace('.dylib', '') in plugin_name.lower():
-                        process.stdout.write(f"    Plugin type: {plugin_name}\n")
-                        if mount_paths:
-                            process.stdout.write(f"    Mounted at: {', '.join(mount_paths)}\n")
-                        found_mounts = True
-
-                if not found_mounts:
-                    process.stdout.write(f"    (Not currently mounted)\n")
 
             return 0
         except Exception as e:
@@ -1869,9 +1918,9 @@ def cmd_plugins(process: Process) -> int:
     else:
         process.stderr.write(f"plugins: unknown subcommand: {subcommand}\n")
         process.stderr.write("\nUsage:\n")
-        process.stderr.write("  plugins load <library_path|url|pfs://..> - Load external plugin\n")
+        process.stderr.write("  plugins list                             - List all plugins\n")
+        process.stderr.write("  plugins load <library_path|url>          - Load external plugin\n")
         process.stderr.write("  plugins unload <library_path>            - Unload external plugin\n")
-        process.stderr.write("  plugins list                             - List loaded external plugins\n")
         return 1
 
 

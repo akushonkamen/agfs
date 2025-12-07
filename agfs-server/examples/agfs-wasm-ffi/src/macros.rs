@@ -41,6 +41,21 @@ macro_rules! export_plugin {
         }
 
         #[no_mangle]
+        pub extern "C" fn plugin_get_config_params() -> *mut u8 {
+            use $crate::memory::CString;
+            use $crate::FileSystem;
+            unsafe {
+                let p = PLUGIN.as_ref().expect("Not initialized");
+                let params = <$plugin_type as $crate::FileSystem>::config_params(p);
+                // Serialize to JSON
+                match serde_json::to_string(&params) {
+                    Ok(json) => CString::new(&json).into_raw(),
+                    Err(_) => CString::new("[]").into_raw(),
+                }
+            }
+        }
+
+        #[no_mangle]
         pub extern "C" fn plugin_validate(config_ptr: *const u8) -> *mut u8 {
             use $crate::ffi::{read_config, result_to_error_ptr};
             use $crate::FileSystem;

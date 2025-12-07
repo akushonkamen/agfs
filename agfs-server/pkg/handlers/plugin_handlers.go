@@ -14,6 +14,7 @@ import (
 
 	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/mountablefs"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -334,15 +335,93 @@ func (ph *PluginHandler) UnloadPlugin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SuccessResponse{Message: "plugin unloaded successfully"})
 }
 
+// PluginMountInfo represents mount information for a plugin
+type PluginMountInfo struct {
+	Path   string                 `json:"path"`
+	Config map[string]interface{} `json:"config,omitempty"`
+}
+
+// PluginInfo represents detailed information about a loaded plugin
+type PluginInfo struct {
+	Name         string                   `json:"name"`
+	LibraryPath  string                   `json:"library_path,omitempty"`
+	IsExternal   bool                     `json:"is_external"`
+	MountedPaths []PluginMountInfo        `json:"mounted_paths"`
+	ConfigParams []plugin.ConfigParameter `json:"config_params,omitempty"`
+}
+
 // ListPluginsResponse represents the response for listing plugins
 type ListPluginsResponse struct {
-	LoadedPlugins []string `json:"loaded_plugins"`
+	Plugins []PluginInfo `json:"plugins"`
 }
 
 // ListPlugins handles GET /plugins
 func (ph *PluginHandler) ListPlugins(w http.ResponseWriter, r *http.Request) {
-	plugins := ph.mfs.GetLoadedExternalPlugins()
-	writeJSON(w, http.StatusOK, ListPluginsResponse{LoadedPlugins: plugins})
+	// Get all mounts
+	mounts := ph.mfs.GetMounts()
+
+	// Build a map of plugin name -> mount info and plugin instance
+	pluginMountsMap := make(map[string][]PluginMountInfo)
+	pluginInstanceMap := make(map[string]plugin.ServicePlugin)
+	pluginNamesSet := make(map[string]bool)
+
+	for _, mount := range mounts {
+		pluginName := mount.Plugin.Name()
+		pluginNamesSet[pluginName] = true
+		pluginMountsMap[pluginName] = append(pluginMountsMap[pluginName], PluginMountInfo{
+			Path:   mount.Path,
+			Config: mount.Config,
+		})
+		// Store plugin instance for getting config params
+		if _, exists := pluginInstanceMap[pluginName]; !exists {
+			pluginInstanceMap[pluginName] = mount.Plugin
+		}
+	}
+
+	// Get plugin name to library path mapping (external plugins)
+	pluginNameToPath := ph.mfs.GetPluginNameToPathMap()
+
+	// Add all external plugins to the set (even if not mounted)
+	for pluginName := range pluginNameToPath {
+		pluginNamesSet[pluginName] = true
+	}
+
+	// Add all builtin plugins to the set
+	builtinPlugins := ph.mfs.GetBuiltinPluginNames()
+	for _, pluginName := range builtinPlugins {
+		pluginNamesSet[pluginName] = true
+	}
+
+	// Build plugin info list
+	var plugins []PluginInfo
+	for pluginName := range pluginNamesSet {
+		info := PluginInfo{
+			Name:         pluginName,
+			MountedPaths: pluginMountsMap[pluginName],
+			IsExternal:   false,
+		}
+
+		// Check if this is an external plugin
+		if libPath, exists := pluginNameToPath[pluginName]; exists {
+			info.IsExternal = true
+			info.LibraryPath = libPath
+		}
+
+		// Get config params from plugin instance if available
+		if pluginInstance, exists := pluginInstanceMap[pluginName]; exists {
+			info.ConfigParams = pluginInstance.GetConfigParams()
+		} else {
+			// For unmounted plugins, create a temporary instance to get config params
+			tempPlugin := ph.mfs.CreatePlugin(pluginName)
+			if tempPlugin != nil {
+				info.ConfigParams = tempPlugin.GetConfigParams()
+			}
+		}
+
+		plugins = append(plugins, info)
+	}
+
+	writeJSON(w, http.StatusOK, ListPluginsResponse{Plugins: plugins})
 }
 
 // SetupRoutes sets up plugin management routes with /api/v1 prefix

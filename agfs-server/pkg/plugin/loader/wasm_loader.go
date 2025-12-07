@@ -41,7 +41,8 @@ func NewWASMPluginLoader() *WASMPluginLoader {
 
 // LoadWASMPlugin loads a plugin from a WASM file
 // If hostFS is provided, it will be exposed to the WASM plugin as host functions
-func (wl *WASMPluginLoader) LoadWASMPlugin(wasmPath string, hostFS ...interface{}) (plugin.ServicePlugin, error) {
+// poolConfig specifies the instance pool configuration (use api.PoolConfig{} for defaults)
+func (wl *WASMPluginLoader) LoadWASMPlugin(wasmPath string, poolConfig api.PoolConfig, hostFS ...interface{}) (plugin.ServicePlugin, error) {
 	wl.mu.Lock()
 	defer wl.mu.Unlock()
 
@@ -187,8 +188,36 @@ func (wl *WASMPluginLoader) LoadWASMPlugin(wasmPath string, hostFS ...interface{
 
 	log.Infof("Loaded WASM module: %s", wasmPath)
 
-	// Create WASM plugin wrapper
-	wasmPlugin, err := api.NewWASMPlugin(ctx, module)
+	// Call plugin_new to initialize and get plugin name
+	pluginName := "wasm-plugin"
+
+	// First call plugin_new
+	if newFunc := module.ExportedFunction("plugin_new"); newFunc != nil {
+		if _, err := newFunc.Call(ctx); err != nil {
+			module.Close(ctx)
+			r.Close(ctx)
+			return nil, fmt.Errorf("failed to call plugin_new: %w", err)
+		}
+	}
+
+	// Then get plugin name
+	if nameFunc := module.ExportedFunction("plugin_name"); nameFunc != nil {
+		if nameResults, err := nameFunc.Call(ctx); err == nil && len(nameResults) > 0 {
+			// Read string from memory
+			if nameStr, ok := api.ReadStringFromWASMMemory(module, uint32(nameResults[0])); ok {
+				pluginName = nameStr
+			}
+		}
+	}
+
+	// Close the initial module as we'll use the instance pool instead
+	module.Close(ctx)
+
+	// Create instance pool with provided configuration
+	instancePool := api.NewWASMInstancePool(ctx, r, compiledModule, pluginName, poolConfig, fs)
+
+	// Create WASM plugin wrapper with pool
+	wasmPlugin, err := api.NewWASMPluginWithPool(instancePool, pluginName)
 	if err != nil {
 		module.Close(ctx)
 		r.Close(ctx)
@@ -264,6 +293,20 @@ func (wl *WASMPluginLoader) GetLoadedPlugins() []string {
 		paths = append(paths, path)
 	}
 	return paths
+}
+
+// GetPluginNameToPathMap returns a map of WASM plugin names to their library paths
+func (wl *WASMPluginLoader) GetPluginNameToPathMap() map[string]string {
+	wl.mu.RLock()
+	defer wl.mu.RUnlock()
+
+	nameToPath := make(map[string]string)
+	for path, loaded := range wl.loadedPlugins {
+		if loaded.Plugin != nil {
+			nameToPath[loaded.Plugin.Name()] = path
+		}
+	}
+	return nameToPath
 }
 
 // IsLoaded checks if a WASM plugin is currently loaded

@@ -274,6 +274,18 @@ EXAMPLES:
 `
 }
 
+func (hb *HeartbeatFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "default_timeout",
+			Type:        "int",
+			Required:    false,
+			Default:     "30",
+			Description: "Default heartbeat timeout in seconds",
+		},
+	}
+}
+
 func (hb *HeartbeatFSPlugin) Shutdown() error {
 	// Stop cleanup goroutine
 	close(hb.stopChan)

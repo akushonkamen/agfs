@@ -97,6 +97,12 @@ func (ep *ExternalPlugin) GetReadme() string {
 	return GoString(readmePtr)
 }
 
+func (ep *ExternalPlugin) GetConfigParams() []plugin.ConfigParameter {
+	// External plugins (native .so/.dylib/.dll) don't expose config params via C API yet
+	// Return empty list for now
+	return []plugin.ConfigParameter{}
+}
+
 func (ep *ExternalPlugin) Shutdown() error {
 	if ep.vtable.PluginShutdown == nil {
 		return nil

@@ -50,6 +50,10 @@ USAGE:
 `
 }
 
+func (p *HelloFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{}
+}
+
 func (p *HelloFSPlugin) Shutdown() error {
 	return nil
 }

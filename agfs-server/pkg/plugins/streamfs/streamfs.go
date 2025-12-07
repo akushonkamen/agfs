@@ -698,6 +698,25 @@ func (p *StreamFSPlugin) GetReadme() string {
 	return getReadme()
 }
 
+func (p *StreamFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "channel_buffer_size",
+			Type:        "string",
+			Required:    false,
+			Default:     "512KB",
+			Description: "Channel buffer size (e.g., '512KB', '1MB')",
+		},
+		{
+			Name:        "ring_buffer_size",
+			Type:        "string",
+			Required:    false,
+			Default:     "1MB",
+			Description: "Ring buffer size (e.g., '1MB', '10MB')",
+		},
+	}
+}
+
 func (p *StreamFSPlugin) Shutdown() error {
 	return nil
 }

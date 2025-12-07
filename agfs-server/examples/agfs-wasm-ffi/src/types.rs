@@ -140,6 +140,36 @@ impl MetaData {
     }
 }
 
+/// Configuration parameter definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigParameter {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub param_type: String,
+    pub required: bool,
+    pub default: String,
+    pub description: String,
+}
+
+impl ConfigParameter {
+    /// Create a new configuration parameter
+    pub fn new(
+        name: impl Into<String>,
+        param_type: impl Into<String>,
+        required: bool,
+        default: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            param_type: param_type.into(),
+            required,
+            default: default.into(),
+            description: description.into(),
+        }
+    }
+}
+
 /// Configuration passed to plugin
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {

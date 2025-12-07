@@ -99,6 +99,10 @@ EXAMPLES:
 `
 }
 
+func (p *ServerInfoFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{}
+}
+
 func (p *ServerInfoFSPlugin) Shutdown() error {
 	return nil
 }

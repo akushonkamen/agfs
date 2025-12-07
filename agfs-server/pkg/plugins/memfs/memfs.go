@@ -121,6 +121,10 @@ AUTHOR: VFS Server
 `
 }
 
+func (p *MemFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{}
+}
+
 func (p *MemFSPlugin) Shutdown() error {
 	return nil
 }

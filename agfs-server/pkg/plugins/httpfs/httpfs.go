@@ -834,6 +834,32 @@ AUTHOR: AGFS Server
 	return readmeContent
 }
 
+func (p *HTTPFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "agfs_path",
+			Type:        "string",
+			Required:    true,
+			Default:     "",
+			Description: "AGFS path to serve over HTTP (e.g., /memfs, /queuefs)",
+		},
+		{
+			Name:        "host",
+			Type:        "string",
+			Required:    false,
+			Default:     "0.0.0.0",
+			Description: "HTTP server host address",
+		},
+		{
+			Name:        "port",
+			Type:        "string",
+			Required:    false,
+			Default:     "8000",
+			Description: "HTTP server port",
+		},
+	}
+}
+
 func (p *HTTPFSPlugin) Shutdown() error {
 	log.Infof("[httpfs] Plugin shutting down (port: %s, path: %s)", p.httpPort, p.agfsPath)
 	if p.fs != nil {

@@ -484,6 +484,60 @@ func (p *S3FSPlugin) GetReadme() string {
 	return getReadme()
 }
 
+func (p *S3FSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "bucket",
+			Type:        "string",
+			Required:    true,
+			Default:     "",
+			Description: "S3 bucket name",
+		},
+		{
+			Name:        "region",
+			Type:        "string",
+			Required:    false,
+			Default:     "us-east-1",
+			Description: "AWS region",
+		},
+		{
+			Name:        "access_key_id",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "AWS access key ID (uses env AWS_ACCESS_KEY_ID if not provided)",
+		},
+		{
+			Name:        "secret_access_key",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "AWS secret access key (uses env AWS_SECRET_ACCESS_KEY if not provided)",
+		},
+		{
+			Name:        "endpoint",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Custom S3 endpoint for S3-compatible services (e.g., MinIO)",
+		},
+		{
+			Name:        "prefix",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Key prefix for namespace isolation",
+		},
+		{
+			Name:        "disable_ssl",
+			Type:        "bool",
+			Required:    false,
+			Default:     "false",
+			Description: "Disable SSL for S3 connections",
+		},
+	}
+}
+
 func (p *S3FSPlugin) Shutdown() error {
 	return nil
 }

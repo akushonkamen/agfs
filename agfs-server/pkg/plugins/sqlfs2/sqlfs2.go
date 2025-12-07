@@ -110,6 +110,88 @@ func (p *SQLFS2Plugin) GetReadme() string {
 	return getReadme()
 }
 
+func (p *SQLFS2Plugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "backend",
+			Type:        "string",
+			Required:    false,
+			Default:     "sqlite",
+			Description: "Database backend (sqlite, sqlite3, mysql, tidb)",
+		},
+		{
+			Name:        "db_path",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database file path (for SQLite)",
+		},
+		{
+			Name:        "dsn",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database connection string (DSN)",
+		},
+		{
+			Name:        "user",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database username",
+		},
+		{
+			Name:        "password",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database password",
+		},
+		{
+			Name:        "host",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database host",
+		},
+		{
+			Name:        "port",
+			Type:        "int",
+			Required:    false,
+			Default:     "",
+			Description: "Database port",
+		},
+		{
+			Name:        "database",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database name",
+		},
+		{
+			Name:        "enable_tls",
+			Type:        "bool",
+			Required:    false,
+			Default:     "false",
+			Description: "Enable TLS for database connection",
+		},
+		{
+			Name:        "tls_server_name",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "TLS server name for verification",
+		},
+		{
+			Name:        "tls_skip_verify",
+			Type:        "bool",
+			Required:    false,
+			Default:     "false",
+			Description: "Skip TLS certificate verification",
+		},
+	}
+}
+
 func (p *SQLFS2Plugin) Shutdown() error {
 	if p.db != nil {
 		return p.db.Close()

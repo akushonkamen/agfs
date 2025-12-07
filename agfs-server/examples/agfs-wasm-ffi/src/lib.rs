@@ -67,7 +67,7 @@ pub mod host_http;
 
 // Re-exports for convenience
 pub use filesystem::{FileSystem, ReadOnlyFileSystem};
-pub use types::{Config, Error, FileInfo, MetaData, Result};
+pub use types::{Config, ConfigParameter, Error, FileInfo, MetaData, Result};
 pub use host_fs::HostFS;
 pub use host_http::{Http, HttpRequest, HttpResponse};
 
@@ -75,7 +75,7 @@ pub use host_http::{Http, HttpRequest, HttpResponse};
 pub mod prelude {
     pub use crate::export_plugin;
     pub use crate::filesystem::{FileSystem, ReadOnlyFileSystem};
-    pub use crate::types::{Config, Error, FileInfo, MetaData, Result};
+    pub use crate::types::{Config, ConfigParameter, Error, FileInfo, MetaData, Result};
     pub use crate::host_fs::HostFS;
     pub use crate::host_http::{Http, HttpRequest, HttpResponse};
 }

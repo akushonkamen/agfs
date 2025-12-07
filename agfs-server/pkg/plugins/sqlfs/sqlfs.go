@@ -113,6 +113,88 @@ func (p *SQLFSPlugin) GetReadme() string {
 	return getReadme()
 }
 
+func (p *SQLFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "backend",
+			Type:        "string",
+			Required:    false,
+			Default:     "sqlite",
+			Description: "Database backend (sqlite, sqlite3, tidb)",
+		},
+		{
+			Name:        "db_path",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database file path (for SQLite)",
+		},
+		{
+			Name:        "dsn",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database connection string (DSN)",
+		},
+		{
+			Name:        "user",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database username",
+		},
+		{
+			Name:        "password",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database password",
+		},
+		{
+			Name:        "host",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database host",
+		},
+		{
+			Name:        "port",
+			Type:        "int",
+			Required:    false,
+			Default:     "",
+			Description: "Database port",
+		},
+		{
+			Name:        "database",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Database name",
+		},
+		{
+			Name:        "cache_enabled",
+			Type:        "bool",
+			Required:    false,
+			Default:     "false",
+			Description: "Enable result caching",
+		},
+		{
+			Name:        "cache_max_size",
+			Type:        "int",
+			Required:    false,
+			Default:     "1000",
+			Description: "Maximum cache size (number of entries)",
+		},
+		{
+			Name:        "cache_ttl_seconds",
+			Type:        "int",
+			Required:    false,
+			Default:     "300",
+			Description: "Cache TTL in seconds",
+		},
+	}
+}
+
 func (p *SQLFSPlugin) Shutdown() error {
 	if p.fs != nil {
 		return p.fs.Close()

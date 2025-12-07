@@ -10,6 +10,7 @@ import (
 
 	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin/api"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin/loader"
 	log "github.com/sirupsen/logrus"
 )
@@ -40,13 +41,13 @@ type MountableFS struct {
 	mu                 sync.RWMutex
 }
 
-// NewMountableFS creates a new mountable file system
-func NewMountableFS() *MountableFS {
+// NewMountableFS creates a new mountable file system with the specified WASM pool configuration
+func NewMountableFS(poolConfig api.PoolConfig) *MountableFS {
 	return &MountableFS{
 		mounts:             make(map[string]*MountPoint),
 		mountPaths:         []string{},
 		pluginFactories:    make(map[string]PluginFactory),
-		pluginLoader:       loader.NewPluginLoader(),
+		pluginLoader:       loader.NewPluginLoader(poolConfig),
 		pluginNameCounters: make(map[string]int),
 	}
 }
@@ -348,6 +349,29 @@ func (mfs *MountableFS) UnloadExternalPlugin(libraryPath string) error {
 // GetLoadedExternalPlugins returns a list of loaded external plugin paths
 func (mfs *MountableFS) GetLoadedExternalPlugins() []string {
 	return mfs.pluginLoader.GetLoadedPlugins()
+}
+
+// GetPluginNameToPathMap returns a map of plugin names to their library paths
+func (mfs *MountableFS) GetPluginNameToPathMap() map[string]string {
+	return mfs.pluginLoader.GetPluginNameToPathMap()
+}
+
+// GetBuiltinPluginNames returns a list of all registered builtin plugin names
+func (mfs *MountableFS) GetBuiltinPluginNames() []string {
+	mfs.mu.RLock()
+	defer mfs.mu.RUnlock()
+
+	// Get external plugin names to exclude them
+	externalPlugins := mfs.pluginLoader.GetPluginNameToPathMap()
+
+	names := make([]string, 0)
+	for name := range mfs.pluginFactories {
+		// Only include plugins that are not external
+		if _, isExternal := externalPlugins[name]; !isExternal {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // LoadExternalPluginsFromDirectory loads all plugins from a directory

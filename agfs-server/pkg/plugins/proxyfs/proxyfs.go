@@ -475,6 +475,18 @@ USE CASES:
 `
 }
 
+func (p *ProxyFSPlugin) GetConfigParams() []plugin.ConfigParameter {
+	return []plugin.ConfigParameter{
+		{
+			Name:        "base_url",
+			Type:        "string",
+			Required:    true,
+			Default:     "",
+			Description: "Base URL of the remote AGFS server (e.g., http://localhost:8080)",
+		},
+	}
+}
+
 func (p *ProxyFSPlugin) Shutdown() error {
 	return nil
 }
