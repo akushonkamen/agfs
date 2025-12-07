@@ -139,7 +139,7 @@ func packHTTPResponse(mod wazeroapi.Module, resp *HTTPResponse) []uint64 {
 		return []uint64{0}
 	}
 
-	respPtr, err := writeBytesToMemory(mod, respJSON)
+	respPtr, _, err := writeBytesToMemory(mod, respJSON)
 	if err != nil {
 		log.Errorf("packHTTPResponse: failed to write response to memory: %v", err)
 		return []uint64{0}

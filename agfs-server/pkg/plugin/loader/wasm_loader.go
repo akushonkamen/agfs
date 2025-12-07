@@ -21,7 +21,6 @@ type LoadedWASMPlugin struct {
 	Path     string
 	Plugin   plugin.ServicePlugin
 	Runtime  wazero.Runtime
-	Module   wazeroapi.Module
 	RefCount int
 	mu       sync.Mutex
 }
@@ -224,12 +223,11 @@ func (wl *WASMPluginLoader) LoadWASMPlugin(wasmPath string, poolConfig api.PoolC
 		return nil, fmt.Errorf("failed to create WASM plugin wrapper: %w", err)
 	}
 
-	// Track loaded plugin
+	// Track loaded plugin (don't save module as it's already closed)
 	loaded := &LoadedWASMPlugin{
 		Path:     absPath,
 		Plugin:   wasmPlugin,
 		Runtime:  r,
-		Module:   module,
 		RefCount: 1,
 	}
 	wl.loadedPlugins[absPath] = loaded
@@ -259,16 +257,13 @@ func (wl *WASMPluginLoader) UnloadWASMPlugin(wasmPath string) error {
 	loaded.mu.Unlock()
 
 	if refCount <= 0 {
-		// Shutdown plugin
+		// Shutdown plugin (this will close the instance pool)
 		if err := loaded.Plugin.Shutdown(); err != nil {
 			log.Warnf("Error shutting down WASM plugin %s: %v", absPath, err)
 		}
 
-		// Close module and runtime
+		// Close runtime
 		ctx := context.Background()
-		if err := loaded.Module.Close(ctx); err != nil {
-			log.Warnf("Error closing WASM module %s: %v", absPath, err)
-		}
 		if err := loaded.Runtime.Close(ctx); err != nil {
 			log.Warnf("Error closing WASM runtime %s: %v", absPath, err)
 		}

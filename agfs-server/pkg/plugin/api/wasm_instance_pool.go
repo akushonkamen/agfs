@@ -309,7 +309,14 @@ func (p *WASMInstancePool) destroyInstance(instance *WASMModuleInstance) {
 // Close closes the pool and destroys all instances
 func (p *WASMInstancePool) Close() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+
+	// Mark as closed first to prevent new acquisitions
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.closed = true
+	p.mu.Unlock()
 
 	// Close all instances in the pool
 	close(p.instances)

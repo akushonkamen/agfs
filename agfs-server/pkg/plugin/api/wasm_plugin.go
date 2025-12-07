@@ -80,10 +80,11 @@ func (wp *WASMPlugin) Validate(config map[string]interface{}) error {
 		}
 
 		// Write config to WASM memory
-		configPtr, err := writeStringToMemory(instance.module, string(configJSON))
+		configPtr, configPtrSize, err := writeStringToMemory(instance.module, string(configJSON))
 		if err != nil {
 			return fmt.Errorf("failed to write config to memory: %w", err)
 		}
+		defer freeWASMMemory(instance.module, configPtr, configPtrSize)
 
 		// Call validate function
 		results, err := validateFunc.Call(wp.instancePool.ctx, uint64(configPtr))
@@ -93,9 +94,12 @@ func (wp *WASMPlugin) Validate(config map[string]interface{}) error {
 
 		// Check for error return (non-zero means error)
 		if len(results) > 0 && results[0] != 0 {
-			if errMsg, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+			errPtr := uint32(results[0])
+			if errMsg, ok := readStringFromMemory(instance.module, errPtr); ok {
+				freeWASMMemory(instance.module, errPtr, 0)
 				return fmt.Errorf("validation failed: %s", errMsg)
 			}
+			freeWASMMemory(instance.module, errPtr, 0)
 			return fmt.Errorf("validation failed")
 		}
 
@@ -119,10 +123,11 @@ func (wp *WASMPlugin) Initialize(config map[string]interface{}) error {
 		}
 
 		// Write config to WASM memory
-		configPtr, err := writeStringToMemory(instance.module, string(configJSON))
+		configPtr, configPtrSize, err := writeStringToMemory(instance.module, string(configJSON))
 		if err != nil {
 			return fmt.Errorf("failed to write config to memory: %w", err)
 		}
+		defer freeWASMMemory(instance.module, configPtr, configPtrSize)
 
 		// Call initialize function
 		results, err := initFunc.Call(wp.instancePool.ctx, uint64(configPtr))
@@ -132,9 +137,12 @@ func (wp *WASMPlugin) Initialize(config map[string]interface{}) error {
 
 		// Check for error return
 		if len(results) > 0 && results[0] != 0 {
-			if errMsg, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+			errPtr := uint32(results[0])
+			if errMsg, ok := readStringFromMemory(instance.module, errPtr); ok {
+				freeWASMMemory(instance.module, errPtr, 0)
 				return fmt.Errorf("initialization failed: %s", errMsg)
 			}
+			freeWASMMemory(instance.module, errPtr, 0)
 			return fmt.Errorf("initialization failed")
 		}
 
@@ -164,10 +172,12 @@ func (wp *WASMPlugin) GetReadme() string {
 			return nil
 		}
 
-		if len(results) > 0 {
-			if r, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+		if len(results) > 0 && results[0] != 0 {
+			ptr := uint32(results[0])
+			if r, ok := readStringFromMemory(instance.module, ptr); ok {
 				readme = r
 			}
+			freeWASMMemory(instance.module, ptr, 0)
 		}
 
 		return nil
@@ -197,15 +207,16 @@ func (wp *WASMPlugin) GetConfigParams() []plugin.ConfigParameter {
 		}
 
 		if len(results) > 0 && results[0] != 0 {
+			ptr := uint32(results[0])
 			// Read JSON string from WASM memory
-			if jsonStr, ok := readStringFromMemory(instance.module, uint32(results[0])); ok {
+			if jsonStr, ok := readStringFromMemory(instance.module, ptr); ok {
 				// Parse JSON into ConfigParameter array
 				if err := json.Unmarshal([]byte(jsonStr), &params); err != nil {
 					log.Warnf("Failed to unmarshal config params JSON: %v", err)
 					params = []plugin.ConfigParameter{}
-					return nil
 				}
 			}
+			freeWASMMemory(instance.module, ptr, 0)
 		}
 
 		return nil
@@ -327,10 +338,11 @@ func (wfs *WASMFileSystem) Create(path string) error {
 		return fmt.Errorf("fs_create not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := createFunc.Call(wfs.ctx, uint64(pathPtr))
 	if err != nil {
@@ -338,9 +350,12 @@ func (wfs *WASMFileSystem) Create(path string) error {
 	}
 
 	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wfs.module, uint32(results[0])); ok {
+		errPtr := uint32(results[0])
+		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return fmt.Errorf("create failed")
 	}
 
@@ -353,10 +368,11 @@ func (wfs *WASMFileSystem) Mkdir(path string, perm uint32) error {
 		return fmt.Errorf("fs_mkdir not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := mkdirFunc.Call(wfs.ctx, uint64(pathPtr), uint64(perm))
 	if err != nil {
@@ -364,9 +380,12 @@ func (wfs *WASMFileSystem) Mkdir(path string, perm uint32) error {
 	}
 
 	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wfs.module, uint32(results[0])); ok {
+		errPtr := uint32(results[0])
+		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return fmt.Errorf("mkdir failed")
 	}
 
@@ -379,10 +398,11 @@ func (wfs *WASMFileSystem) Remove(path string) error {
 		return fmt.Errorf("fs_remove not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := removeFunc.Call(wfs.ctx, uint64(pathPtr))
 	if err != nil {
@@ -390,9 +410,12 @@ func (wfs *WASMFileSystem) Remove(path string) error {
 	}
 
 	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wfs.module, uint32(results[0])); ok {
+		errPtr := uint32(results[0])
+		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return fmt.Errorf("remove failed")
 	}
 
@@ -406,10 +429,11 @@ func (wfs *WASMFileSystem) RemoveAll(path string) error {
 		return wfs.Remove(path)
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := removeAllFunc.Call(wfs.ctx, uint64(pathPtr))
 	if err != nil {
@@ -417,9 +441,12 @@ func (wfs *WASMFileSystem) RemoveAll(path string) error {
 	}
 
 	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wfs.module, uint32(results[0])); ok {
+		errPtr := uint32(results[0])
+		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return fmt.Errorf("remove_all failed")
 	}
 
@@ -439,10 +466,11 @@ func (wfs *WASMFileSystem) Read(path string, offset int64, size int64) ([]byte, 
 		return nil, fmt.Errorf("fs_read not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return nil, err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := readFunc.Call(wfs.ctx, uint64(pathPtr), uint64(offset), uint64(size))
 	if err != nil {
@@ -464,8 +492,12 @@ func (wfs *WASMFileSystem) Read(path string, offset int64, size int64) ([]byte, 
 
 	data, ok := wfs.module.Memory().Read(dataPtr, dataSize)
 	if !ok {
+		freeWASMMemory(wfs.module, dataPtr, 0)
 		return nil, fmt.Errorf("failed to read data from memory")
 	}
+
+	// Free WASM memory after copying data
+	freeWASMMemory(wfs.module, dataPtr, 0)
 
 	return data, nil
 }
@@ -476,15 +508,17 @@ func (wfs *WASMFileSystem) Write(path string, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("fs_write not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return nil, err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
-	dataPtr, err := writeBytesToMemory(wfs.module, data)
+	dataPtr, dataPtrSize, err := writeBytesToMemory(wfs.module, data)
 	if err != nil {
 		return nil, err
 	}
+	defer freeWASMMemory(wfs.module, dataPtr, dataPtrSize)
 
 	results, err := writeFunc.Call(wfs.ctx, uint64(pathPtr), uint64(dataPtr), uint64(len(data)))
 	if err != nil {
@@ -507,8 +541,12 @@ func (wfs *WASMFileSystem) Write(path string, data []byte) ([]byte, error) {
 	// Read response data from memory
 	response, ok := wfs.module.Memory().Read(responsePtr, responseSize)
 	if !ok {
+		freeWASMMemory(wfs.module, responsePtr, 0)
 		return nil, fmt.Errorf("failed to read response data from memory")
 	}
+
+	// Free WASM memory after copying data
+	freeWASMMemory(wfs.module, responsePtr, 0)
 
 	return response, nil
 }
@@ -519,10 +557,11 @@ func (wfs *WASMFileSystem) ReadDir(path string) ([]filesystem.FileInfo, error) {
 		return nil, fmt.Errorf("fs_readdir not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return nil, err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := readDirFunc.Call(wfs.ctx, uint64(pathPtr))
 	if err != nil {
@@ -541,8 +580,10 @@ func (wfs *WASMFileSystem) ReadDir(path string) ([]filesystem.FileInfo, error) {
 	// Check for error
 	if errPtr != 0 {
 		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return nil, fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return nil, fmt.Errorf("readdir failed")
 	}
 
@@ -552,8 +593,12 @@ func (wfs *WASMFileSystem) ReadDir(path string) ([]filesystem.FileInfo, error) {
 
 	jsonStr, ok := readStringFromMemory(wfs.module, jsonPtr)
 	if !ok {
+		freeWASMMemory(wfs.module, jsonPtr, 0)
 		return nil, fmt.Errorf("failed to read readdir result")
 	}
+
+	// Free WASM memory after reading
+	freeWASMMemory(wfs.module, jsonPtr, 0)
 
 	var fileInfos []filesystem.FileInfo
 	if err := json.Unmarshal([]byte(jsonStr), &fileInfos); err != nil {
@@ -570,11 +615,12 @@ func (wfs *WASMFileSystem) Stat(path string) (*filesystem.FileInfo, error) {
 		return nil, fmt.Errorf("fs_stat not implemented")
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		log.Errorf("Failed to write path to memory: %v", err)
 		return nil, err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	log.Debugf("Calling fs_stat WASM function with pathPtr=%d", pathPtr)
 	results, err := statFunc.Call(wfs.ctx, uint64(pathPtr))
@@ -596,8 +642,10 @@ func (wfs *WASMFileSystem) Stat(path string) (*filesystem.FileInfo, error) {
 	// Check for error
 	if errPtr != 0 {
 		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return nil, fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return nil, fmt.Errorf("stat failed")
 	}
 
@@ -607,8 +655,12 @@ func (wfs *WASMFileSystem) Stat(path string) (*filesystem.FileInfo, error) {
 
 	jsonStr, ok := readStringFromMemory(wfs.module, jsonPtr)
 	if !ok {
+		freeWASMMemory(wfs.module, jsonPtr, 0)
 		return nil, fmt.Errorf("failed to read stat result")
 	}
+
+	// Free WASM memory after reading
+	freeWASMMemory(wfs.module, jsonPtr, 0)
 
 	var fileInfo filesystem.FileInfo
 	if err := json.Unmarshal([]byte(jsonStr), &fileInfo); err != nil {
@@ -624,15 +676,17 @@ func (wfs *WASMFileSystem) Rename(oldPath, newPath string) error {
 		return fmt.Errorf("fs_rename not implemented")
 	}
 
-	oldPathPtr, err := writeStringToMemory(wfs.module, oldPath)
+	oldPathPtr, oldPathPtrSize, err := writeStringToMemory(wfs.module, oldPath)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, oldPathPtr, oldPathPtrSize)
 
-	newPathPtr, err := writeStringToMemory(wfs.module, newPath)
+	newPathPtr, newPathPtrSize, err := writeStringToMemory(wfs.module, newPath)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, newPathPtr, newPathPtrSize)
 
 	results, err := renameFunc.Call(wfs.ctx, uint64(oldPathPtr), uint64(newPathPtr))
 	if err != nil {
@@ -640,9 +694,12 @@ func (wfs *WASMFileSystem) Rename(oldPath, newPath string) error {
 	}
 
 	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wfs.module, uint32(results[0])); ok {
+		errPtr := uint32(results[0])
+		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return fmt.Errorf("rename failed")
 	}
 
@@ -656,10 +713,11 @@ func (wfs *WASMFileSystem) Chmod(path string, mode uint32) error {
 		return nil
 	}
 
-	pathPtr, err := writeStringToMemory(wfs.module, path)
+	pathPtr, pathPtrSize, err := writeStringToMemory(wfs.module, path)
 	if err != nil {
 		return err
 	}
+	defer freeWASMMemory(wfs.module, pathPtr, pathPtrSize)
 
 	results, err := chmodFunc.Call(wfs.ctx, uint64(pathPtr), uint64(mode))
 	if err != nil {
@@ -667,9 +725,12 @@ func (wfs *WASMFileSystem) Chmod(path string, mode uint32) error {
 	}
 
 	if len(results) > 0 && results[0] != 0 {
-		if errMsg, ok := readStringFromMemory(wfs.module, uint32(results[0])); ok {
+		errPtr := uint32(results[0])
+		if errMsg, ok := readStringFromMemory(wfs.module, errPtr); ok {
+			freeWASMMemory(wfs.module, errPtr, 0)
 			return fmt.Errorf("%s", errMsg)
 		}
+		freeWASMMemory(wfs.module, errPtr, 0)
 		return fmt.Errorf("chmod failed")
 	}
 
@@ -717,6 +778,37 @@ func (w *wasmWriteCloser) Close() error {
 
 // Helper functions for memory management
 
+// freeWASMMemory frees memory allocated in WASM module
+// Supports both standard free(ptr) and Rust-style free(ptr, size)
+// If size is 0, tries both calling conventions
+func freeWASMMemory(module wazeroapi.Module, ptr uint32, size uint32) {
+	if ptr == 0 {
+		return
+	}
+
+	freeFunc := module.ExportedFunction("free")
+	if freeFunc == nil {
+		// free function not available, skip silently
+		// Memory will be reclaimed when instance is destroyed
+		return
+	}
+
+	// Try calling with two parameters first (Rust-style: ptr, size)
+	_, err := freeFunc.Call(context.Background(), uint64(ptr), uint64(size))
+	if err != nil {
+		// If that fails and size is 0, it might be standard C free(ptr)
+		// Try with single parameter
+		if size == 0 {
+			_, err2 := freeFunc.Call(context.Background(), uint64(ptr))
+			if err2 != nil {
+				log.Debugf("free failed with both signatures: two-param(%v), one-param(%v)", err, err2)
+			}
+		} else {
+			log.Debugf("free failed: %v", err)
+		}
+	}
+}
+
 // ReadStringFromWASMMemory is exported for use by wasm_loader
 func ReadStringFromWASMMemory(module wazeroapi.Module, ptr uint32) (string, bool) {
 	return readStringFromMemory(module, ptr)
@@ -757,66 +849,66 @@ func readStringFromMemory(module wazeroapi.Module, ptr uint32) (string, bool) {
 	return string(data), true
 }
 
-func writeStringToMemory(module wazeroapi.Module, s string) (uint32, error) {
+func writeStringToMemory(module wazeroapi.Module, s string) (ptr uint32, size uint32, err error) {
 	// Allocate memory in WASM module
 	allocFunc := module.ExportedFunction("malloc")
 	if allocFunc == nil {
-		return 0, fmt.Errorf("malloc function not found in WASM module")
+		return 0, 0, fmt.Errorf("malloc function not found in WASM module")
 	}
 
-	size := uint32(len(s) + 1) // +1 for null terminator
-	results, err := allocFunc.Call(context.Background(), uint64(size))
-	if err != nil {
-		return 0, fmt.Errorf("malloc failed: %w", err)
+	size = uint32(len(s) + 1) // +1 for null terminator
+	results, callErr := allocFunc.Call(context.Background(), uint64(size))
+	if callErr != nil {
+		return 0, 0, fmt.Errorf("malloc failed: %w", callErr)
 	}
 
 	if len(results) == 0 {
-		return 0, fmt.Errorf("malloc returned no results")
+		return 0, 0, fmt.Errorf("malloc returned no results")
 	}
 
-	ptr := uint32(results[0])
+	ptr = uint32(results[0])
 	if ptr == 0 {
-		return 0, fmt.Errorf("malloc returned null pointer")
+		return 0, 0, fmt.Errorf("malloc returned null pointer")
 	}
 
 	// Write string to memory
 	mem := module.Memory()
 	data := append([]byte(s), 0) // Add null terminator
 	if !mem.Write(ptr, data) {
-		return 0, fmt.Errorf("failed to write string to memory")
+		return 0, 0, fmt.Errorf("failed to write string to memory")
 	}
 
-	return ptr, nil
+	return ptr, size, nil
 }
 
-func writeBytesToMemory(module wazeroapi.Module, data []byte) (uint32, error) {
+func writeBytesToMemory(module wazeroapi.Module, data []byte) (ptr uint32, size uint32, err error) {
 	// Allocate memory in WASM module
 	allocFunc := module.ExportedFunction("malloc")
 	if allocFunc == nil {
-		return 0, fmt.Errorf("malloc function not found in WASM module")
+		return 0, 0, fmt.Errorf("malloc function not found in WASM module")
 	}
 
-	size := uint32(len(data))
-	results, err := allocFunc.Call(context.Background(), uint64(size))
-	if err != nil {
-		return 0, fmt.Errorf("malloc failed: %w", err)
+	size = uint32(len(data))
+	results, callErr := allocFunc.Call(context.Background(), uint64(size))
+	if callErr != nil {
+		return 0, 0, fmt.Errorf("malloc failed: %w", callErr)
 	}
 
 	if len(results) == 0 {
-		return 0, fmt.Errorf("malloc returned no results")
+		return 0, 0, fmt.Errorf("malloc returned no results")
 	}
 
-	ptr := uint32(results[0])
+	ptr = uint32(results[0])
 	if ptr == 0 {
-		return 0, fmt.Errorf("malloc returned null pointer")
+		return 0, 0, fmt.Errorf("malloc returned null pointer")
 	}
 
 	// Write data to memory
 	mem := module.Memory()
 	if !mem.Write(ptr, data) {
-		return 0, fmt.Errorf("failed to write bytes to memory")
+		return 0, 0, fmt.Errorf("failed to write bytes to memory")
 	}
 
-	return ptr, nil
+	return ptr, size, nil
 }
 

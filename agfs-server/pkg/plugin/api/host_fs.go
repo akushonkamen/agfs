@@ -38,7 +38,7 @@ func HostFSRead(ctx context.Context, mod wazeroapi.Module, params []uint64, fs f
 	}
 
 	// Write data to WASM memory
-	dataPtr, err := writeBytesToMemory(mod, data)
+	dataPtr, _, err := writeBytesToMemory(mod, data)
 	if err != nil {
 		log.Errorf("host_fs_read: failed to write data to memory: %v", err)
 		return []uint64{0}
@@ -81,7 +81,7 @@ func HostFSWrite(ctx context.Context, mod wazeroapi.Module, params []uint64, fs 
 	}
 
 	// Write response to WASM memory
-	responsePtr, err := writeBytesToMemory(mod, response)
+	responsePtr, _, err := writeBytesToMemory(mod, response)
 	if err != nil {
 		log.Errorf("host_fs_write: failed to write response to memory: %v", err)
 		return []uint64{0}
@@ -105,7 +105,7 @@ func HostFSStat(ctx context.Context, mod wazeroapi.Module, params []uint64, fs f
 
 	if fs == nil {
 		log.Errorf("host_fs_stat: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr) << 32}
 	}
 
@@ -114,7 +114,7 @@ func HostFSStat(ctx context.Context, mod wazeroapi.Module, params []uint64, fs f
 		log.Errorf("host_fs_stat: error stating file: %v", err)
 		// Pack error: upper 32 bits = error pointer
 		errStr := err.Error()
-		errPtr, err := writeStringToMemory(mod, errStr)
+		errPtr, _, err := writeStringToMemory(mod, errStr)
 		if err != nil {
 			return []uint64{0}
 		}
@@ -128,7 +128,7 @@ func HostFSStat(ctx context.Context, mod wazeroapi.Module, params []uint64, fs f
 		return []uint64{0}
 	}
 
-	jsonPtr, err := writeStringToMemory(mod, string(jsonData))
+	jsonPtr, _, err := writeStringToMemory(mod, string(jsonData))
 	if err != nil {
 		log.Errorf("host_fs_stat: failed to write JSON to memory: %v", err)
 		return []uint64{0}
@@ -151,7 +151,7 @@ func HostFSReadDir(ctx context.Context, mod wazeroapi.Module, params []uint64, f
 
 	if fs == nil {
 		log.Errorf("host_fs_readdir: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr) << 32}
 	}
 
@@ -159,7 +159,7 @@ func HostFSReadDir(ctx context.Context, mod wazeroapi.Module, params []uint64, f
 	if err != nil {
 		log.Errorf("host_fs_readdir: error reading directory: %v", err)
 		errStr := err.Error()
-		errPtr, err := writeStringToMemory(mod, errStr)
+		errPtr, _, err := writeStringToMemory(mod, errStr)
 		if err != nil {
 			return []uint64{0}
 		}
@@ -173,7 +173,7 @@ func HostFSReadDir(ctx context.Context, mod wazeroapi.Module, params []uint64, f
 		return []uint64{0}
 	}
 
-	jsonPtr, err := writeStringToMemory(mod, string(jsonData))
+	jsonPtr, _, err := writeStringToMemory(mod, string(jsonData))
 	if err != nil {
 		log.Errorf("host_fs_readdir: failed to write JSON to memory: %v", err)
 		return []uint64{0}
@@ -194,14 +194,14 @@ func HostFSCreate(ctx context.Context, mod wazeroapi.Module, params []uint64, fs
 
 	if fs == nil {
 		log.Errorf("host_fs_create: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr)}
 	}
 
 	err := fs.Create(path)
 	if err != nil {
 		log.Errorf("host_fs_create: error creating file: %v", err)
-		errPtr, _ := writeStringToMemory(mod, err.Error())
+		errPtr, _, _ := writeStringToMemory(mod, err.Error())
 		return []uint64{uint64(errPtr)}
 	}
 
@@ -221,14 +221,14 @@ func HostFSMkdir(ctx context.Context, mod wazeroapi.Module, params []uint64, fs 
 
 	if fs == nil {
 		log.Errorf("host_fs_mkdir: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr)}
 	}
 
 	err := fs.Mkdir(path, perm)
 	if err != nil {
 		log.Errorf("host_fs_mkdir: error creating directory: %v", err)
-		errPtr, _ := writeStringToMemory(mod, err.Error())
+		errPtr, _, _ := writeStringToMemory(mod, err.Error())
 		return []uint64{uint64(errPtr)}
 	}
 
@@ -247,14 +247,14 @@ func HostFSRemove(ctx context.Context, mod wazeroapi.Module, params []uint64, fs
 
 	if fs == nil {
 		log.Errorf("host_fs_remove: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr)}
 	}
 
 	err := fs.Remove(path)
 	if err != nil {
 		log.Errorf("host_fs_remove: error removing: %v", err)
-		errPtr, _ := writeStringToMemory(mod, err.Error())
+		errPtr, _, _ := writeStringToMemory(mod, err.Error())
 		return []uint64{uint64(errPtr)}
 	}
 
@@ -273,14 +273,14 @@ func HostFSRemoveAll(ctx context.Context, mod wazeroapi.Module, params []uint64,
 
 	if fs == nil {
 		log.Errorf("host_fs_remove_all: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr)}
 	}
 
 	err := fs.RemoveAll(path)
 	if err != nil {
 		log.Errorf("host_fs_remove_all: error removing: %v", err)
-		errPtr, _ := writeStringToMemory(mod, err.Error())
+		errPtr, _, _ := writeStringToMemory(mod, err.Error())
 		return []uint64{uint64(errPtr)}
 	}
 
@@ -305,14 +305,14 @@ func HostFSRename(ctx context.Context, mod wazeroapi.Module, params []uint64, fs
 
 	if fs == nil {
 		log.Errorf("host_fs_rename: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr)}
 	}
 
 	err := fs.Rename(oldPath, newPath)
 	if err != nil {
 		log.Errorf("host_fs_rename: error renaming: %v", err)
-		errPtr, _ := writeStringToMemory(mod, err.Error())
+		errPtr, _, _ := writeStringToMemory(mod, err.Error())
 		return []uint64{uint64(errPtr)}
 	}
 
@@ -332,14 +332,14 @@ func HostFSChmod(ctx context.Context, mod wazeroapi.Module, params []uint64, fs 
 
 	if fs == nil {
 		log.Errorf("host_fs_chmod: no host filesystem provided")
-		errPtr, _ := writeStringToMemory(mod, "no host filesystem provided")
+		errPtr, _, _ := writeStringToMemory(mod, "no host filesystem provided")
 		return []uint64{uint64(errPtr)}
 	}
 
 	err := fs.Chmod(path, mode)
 	if err != nil {
 		log.Errorf("host_fs_chmod: error changing mode: %v", err)
-		errPtr, _ := writeStringToMemory(mod, err.Error())
+		errPtr, _, _ := writeStringToMemory(mod, err.Error())
 		return []uint64{uint64(errPtr)}
 	}
 
