@@ -175,6 +175,94 @@ class Shell:
         # $0 - script name (do this after $# to avoid conflicts)
         text = text.replace('$0', self.env.get('0', ''))
 
+        # First, expand arithmetic expressions: $((expression))
+        # This must be done BEFORE $(command) to avoid conflicts
+        def replace_arithmetic(match):
+            expr = match.group(1)
+            try:
+                # Expand variables in the expression
+                # In bash arithmetic, variables can be used with or without $
+                # We need to expand both $VAR and VAR
+                expanded_expr = expr
+
+                # First, expand $VAR (with dollar sign)
+                for var_match in re.finditer(r'\$([A-Za-z_][A-Za-z0-9_]*)', expr):
+                    var_name = var_match.group(1)
+                    var_value = self.env.get(var_name, '0')
+                    # Try to convert to int, default to 0 if not numeric
+                    try:
+                        int(var_value)
+                    except ValueError:
+                        var_value = '0'
+                    expanded_expr = expanded_expr.replace(f'${var_name}', var_value)
+
+                # Then, expand VAR (without dollar sign)
+                # We need to be careful not to replace keywords like 'and', 'or', 'not'
+                # and not to replace numbers
+                for var_match in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', expanded_expr):
+                    var_name = var_match.group(1)
+                    # Skip Python keywords
+                    if var_name in ['and', 'or', 'not', 'in', 'is']:
+                        continue
+                    if var_name in self.env:
+                        var_value = self.env.get(var_name, '0')
+                        # Try to convert to int, default to 0 if not numeric
+                        try:
+                            int(var_value)
+                        except ValueError:
+                            var_value = '0'
+                        expanded_expr = expanded_expr.replace(var_name, var_value)
+
+                # Evaluate the arithmetic expression
+                result = eval(expanded_expr)
+                return str(int(result))
+            except Exception as e:
+                # If evaluation fails, return 0
+                return '0'
+
+        # Use a more sophisticated pattern to handle nested parentheses
+        # Match $((anything)) where we need to count parentheses properly
+        def find_and_replace_arithmetic(text):
+            result = []
+            i = 0
+            while i < len(text):
+                # Look for $((
+                if i < len(text) - 2 and text[i:i+3] == '$((':
+                    # Found start of arithmetic expression
+                    start = i
+                    i += 3
+                    depth = 2  # We've seen $(( which is 2 open parens
+                    expr_start = i
+
+                    # Find the matching ))
+                    while i < len(text) and depth > 0:
+                        if text[i] == '(':
+                            depth += 1
+                        elif text[i] == ')':
+                            depth -= 1
+                        i += 1
+
+                    if depth == 0:
+                        # Found matching ))
+                        expr = text[expr_start:i-2]  # -2 to exclude the ))
+                        # Create a match object-like thing
+                        class FakeMatch:
+                            def __init__(self, expr):
+                                self.expr = expr
+                            def group(self, n):
+                                return self.expr
+                        replacement = replace_arithmetic(FakeMatch(expr))
+                        result.append(replacement)
+                    else:
+                        # Unmatched, keep original
+                        result.append(text[start:i])
+                else:
+                    result.append(text[i])
+                    i += 1
+            return ''.join(result)
+
+        text = find_and_replace_arithmetic(text)
+
         # Then, expand command substitutions: $(command) and `command`
         # Process $(...) command substitution
         def replace_command_subst(match):
@@ -428,6 +516,13 @@ class Shell:
                         i += 1
                     # Execute the nested for loop
                     last_exit_code = self.execute_for_loop(nested_for_lines)
+                    # If nested loop returned break, propagate it up
+                    if last_exit_code == -996:
+                        return last_exit_code
+                    # If nested loop returned continue, it only affects the nested loop
+                    # so we reset it to 0
+                    if last_exit_code == -995:
+                        last_exit_code = 0
                 # Check if this is a nested if statement
                 elif cmd.strip().startswith('if '):
                     # Collect the nested if statement with depth tracking
@@ -447,9 +542,23 @@ class Shell:
                         i += 1
                     # Execute the nested if statement
                     last_exit_code = self.execute_if_statement(nested_if_lines)
+                    # Check for break or continue from within if statement
+                    if last_exit_code == -996:
+                        # break: exit the for loop
+                        return last_exit_code
+                    elif last_exit_code == -995:
+                        # continue: skip to next iteration
+                        break  # Break out of the while loop (commands in current iteration)
                 else:
                     # Regular command
                     last_exit_code = self.execute(cmd)
+                    # Check for break or continue
+                    if last_exit_code == -996:
+                        # break: exit the for loop
+                        return last_exit_code
+                    elif last_exit_code == -995:
+                        # continue: skip to next iteration
+                        break  # Break out of the while loop (commands in current iteration)
 
                 i += 1
 
@@ -525,7 +634,26 @@ class Shell:
                         # Split items by whitespace
                         # Use simple split() for word splitting after variable expansion
                         # This mimics bash's word splitting behavior
-                        result['items'] = items_str.split()
+                        raw_items = items_str.split()
+
+                        # Expand glob patterns in each item
+                        expanded_items = []
+                        for item in raw_items:
+                            # Check if item contains glob characters
+                            if '*' in item or '?' in item or '[' in item:
+                                # Try to expand the glob pattern
+                                matches = self._match_glob_pattern(item)
+                                if matches:
+                                    # Add all matching files
+                                    expanded_items.extend(sorted(matches))
+                                else:
+                                    # No matches, keep original pattern
+                                    expanded_items.append(item)
+                            else:
+                                # Not a glob pattern, keep as is
+                                expanded_items.append(item)
+
+                        result['items'] = expanded_items
                         first_for_parsed = True
                     else:
                         # Invalid for syntax
@@ -585,6 +713,9 @@ class Shell:
                 last_exit_code = 0
                 for cmd in commands_block:
                     last_exit_code = self.execute(cmd)
+                    # If break or continue, return immediately to propagate to for loop
+                    if last_exit_code in [-995, -996]:
+                        return last_exit_code
                 return last_exit_code
 
         # If no condition was true, execute else block if present
@@ -592,6 +723,9 @@ class Shell:
             last_exit_code = 0
             for cmd in parsed['else_block']:
                 last_exit_code = self.execute(cmd)
+                # If break or continue, return immediately to propagate to for loop
+                if last_exit_code in [-995, -996]:
+                    return last_exit_code
             return last_exit_code
 
         return 0
@@ -1281,7 +1415,9 @@ class Shell:
                     else:
                         # Normal command execution - update $?
                         # Skip special exit codes for internal use
-                        if exit_code not in [-998, -999]:
+                        # -997: for loop collection, -998: if collection, -999: heredoc
+                        # -996: break, -995: continue
+                        if exit_code not in [-995, -996, -997, -998, -999]:
                             self.env['?'] = str(exit_code)
 
                 except KeyboardInterrupt:
