@@ -7,12 +7,15 @@ RUN apk add --no-cache git make gcc musl-dev sqlite-dev
 # Set working directory
 WORKDIR /build
 
+# Copy SDK first
+COPY agfs-sdk /agfs-sdk
+
 # Copy go mod files
-COPY go.mod go.sum ./
+COPY agfs-server/go.mod agfs-server/go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY agfs-server .
 
 # Build the application
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o agfs-server cmd/server/main.go
