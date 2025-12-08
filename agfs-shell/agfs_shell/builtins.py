@@ -376,16 +376,28 @@ def cmd_head(process: Process) -> int:
     return 0
 
 
-@command()
+@command(needs_path_resolution=True, supports_streaming=True)
 def cmd_tail(process: Process) -> int:
     """
     Output the last part of files
 
-    Usage: tail [-n count]
-    """
-    n = 10  # default
+    Usage: tail [-n count] [-f] [-F] [file...]
 
-    # Parse -n flag
+    Options:
+        -n count    Output the last count lines (default: 10)
+        -f          Follow mode: show last n lines, then continuously follow
+        -F          Stream mode: for streamfs/streamrotatefs only
+                    Continuously reads from the stream without loading history
+                    Ideal for infinite streams like /streamfs/* or /streamrotate/*
+    """
+    import time
+
+    n = 10  # default
+    follow = False
+    stream_only = False  # -F flag: skip reading history
+    files = []
+
+    # Parse flags
     args = process.args[:]
     i = 0
     while i < len(args):
@@ -397,12 +409,203 @@ def cmd_tail(process: Process) -> int:
             except ValueError:
                 process.stderr.write(f"tail: invalid number: {args[i + 1]}\n")
                 return 1
-        i += 1
+        elif args[i] == '-f':
+            follow = True
+            i += 1
+        elif args[i] == '-F':
+            follow = True
+            stream_only = True
+            i += 1
+        else:
+            # This is a file argument
+            files.append(args[i])
+            i += 1
 
-    # Read lines from stdin
+    # Handle stdin or files
+    if not files:
+        # Read from stdin
+        lines = process.stdin.readlines()
+        for line in lines[-n:]:
+            process.stdout.write(line)
+
+        if follow:
+            process.stderr.write(b"tail: warning: following stdin is not supported\n")
+
+        return 0
+
+    # Read from files
+    if not follow:
+        # Normal tail mode - read last n lines from each file
+        for filename in files:
+            try:
+                if not process.filesystem:
+                    process.stderr.write(b"tail: filesystem not available\n")
+                    return 1
+
+                # Use streaming mode to read entire file
+                stream = process.filesystem.read_file(filename, stream=True)
+                chunks = []
+                for chunk in stream:
+                    if chunk:
+                        chunks.append(chunk)
+                content = b''.join(chunks)
+                lines = content.decode('utf-8', errors='replace').splitlines(keepends=True)
+                for line in lines[-n:]:
+                    process.stdout.write(line)
+            except Exception as e:
+                process.stderr.write(f"tail: {filename}: {str(e)}\n")
+                return 1
+    else:
+        # Follow mode - continuously read new content
+        if len(files) > 1:
+            process.stderr.write(b"tail: warning: following multiple files not yet supported, using first file\n")
+
+        filename = files[0]
+
+        try:
+            if process.filesystem:
+                if stream_only:
+                    # -F mode: Stream-only mode for filesystems that support streaming
+                    # This mode uses continuous streaming read without loading history
+                    process.stderr.write(b"==> Continuously reading from stream <==\n")
+                    process.stdout.flush()
+
+                    # Use continuous streaming read
+                    try:
+                        stream = process.filesystem.read_file(filename, stream=True)
+                        for chunk in stream:
+                            if chunk:
+                                process.stdout.write(chunk)
+                                process.stdout.flush()
+                    except KeyboardInterrupt:
+                        process.stderr.write(b"\n")
+                        return 0
+                    except Exception as e:
+                        error_msg = str(e)
+                        # Check if it's a streaming-related error
+                        if "stream mode" in error_msg.lower() or "use stream" in error_msg.lower():
+                            process.stderr.write(f"tail: {filename}: {error_msg}\n".encode())
+                            process.stderr.write(b"      Note: -F requires a filesystem that supports streaming\n")
+                        else:
+                            process.stderr.write(f"tail: {filename}: {error_msg}\n".encode())
+                        return 1
+                else:
+                    # -f mode: Traditional follow mode
+                    # First, output the last n lines
+                    stream = process.filesystem.read_file(filename, stream=True)
+                    chunks = []
+                    for chunk in stream:
+                        if chunk:
+                            chunks.append(chunk)
+                    content = b''.join(chunks)
+                    lines = content.decode('utf-8', errors='replace').splitlines(keepends=True)
+                    for line in lines[-n:]:
+                        process.stdout.write(line)
+                    process.stdout.flush()
+
+                    # Get current file size
+                    file_info = process.filesystem.get_file_info(filename)
+                    current_size = file_info.get('size', 0)
+
+                    # Now continuously poll for new content
+                    try:
+                        while True:
+                            time.sleep(0.1)  # Poll every 100ms
+
+                            # Check file size
+                            try:
+                                file_info = process.filesystem.get_file_info(filename)
+                                new_size = file_info.get('size', 0)
+                            except Exception:
+                                # File might not exist yet, keep waiting
+                                continue
+
+                            if new_size > current_size:
+                                # Read new content from offset using streaming
+                                stream = process.filesystem.read_file(
+                                    filename,
+                                    offset=current_size,
+                                    size=new_size - current_size,
+                                    stream=True
+                                )
+                                for chunk in stream:
+                                    if chunk:
+                                        process.stdout.write(chunk)
+                                process.stdout.flush()
+                                current_size = new_size
+                    except KeyboardInterrupt:
+                        # Clean exit on Ctrl+C
+                        process.stderr.write(b"\n")
+                        return 0
+            else:
+                # No filesystem - should not happen in normal usage
+                process.stderr.write(b"tail: filesystem not available\n")
+                return 1
+
+        except Exception as e:
+            process.stderr.write(f"tail: {filename}: {str(e)}\n")
+            return 1
+
+    return 0
+
+
+@command(needs_path_resolution=True)
+def cmd_tee(process: Process) -> int:
+    """
+    Read from stdin and write to both stdout and files (streaming mode)
+
+    Usage: tee [-a] [file...]
+
+    Options:
+        -a    Append to files instead of overwriting
+    """
+    append = False
+    files = []
+
+    # Parse arguments
+    for arg in process.args:
+        if arg == '-a':
+            append = True
+        else:
+            files.append(arg)
+
+    if files and not process.filesystem:
+        process.stderr.write(b"tee: filesystem not available\n")
+        return 1
+
+    # Read input lines
     lines = process.stdin.readlines()
-    for line in lines[-n:]:
+
+    # Write to stdout (streaming: flush after each line)
+    for line in lines:
         process.stdout.write(line)
+        process.stdout.flush()
+
+    # Write to files
+    if files:
+        if append:
+            # Append mode: must collect all data
+            content = b''.join(lines)
+            for filename in files:
+                try:
+                    process.filesystem.write_file(filename, content, append=True)
+                except Exception as e:
+                    process.stderr.write(f"tee: {filename}: {str(e)}\n".encode())
+                    return 1
+        else:
+            # Non-append mode: use streaming write via iterator
+            # Create an iterator from lines
+            def line_iterator():
+                for line in lines:
+                    yield line
+
+            for filename in files:
+                try:
+                    # Pass iterator to write_file for streaming
+                    process.filesystem.write_file(filename, line_iterator(), append=False)
+                except Exception as e:
+                    process.stderr.write(f"tee: {filename}: {str(e)}\n".encode())
+                    return 1
 
     return 0
 
@@ -3426,6 +3629,7 @@ BUILTINS = {
     'wc': cmd_wc,
     'head': cmd_head,
     'tail': cmd_tail,
+    'tee': cmd_tee,
     'sort': cmd_sort,
     'uniq': cmd_uniq,
     'tr': cmd_tr,

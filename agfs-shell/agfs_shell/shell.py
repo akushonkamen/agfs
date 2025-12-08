@@ -107,11 +107,32 @@ class Shell:
                 # Resolve paths for file commands (using metadata instead of hardcoded list)
                 if CommandMetadata.needs_path_resolution(cmd):
                     resolved_args = []
-                    for arg in args:
+                    skip_next = False
+                    for j, arg in enumerate(args):
+                        # Skip if this is a flag value (e.g., the "2" in "-n 2")
+                        if skip_next:
+                            resolved_args.append(arg)
+                            skip_next = False
+                            continue
+
+                        # Skip flags (starting with -)
                         if arg.startswith('-'):
                             resolved_args.append(arg)
-                        else:
-                            resolved_args.append(self.resolve_path(arg))
+                            # Check if this flag takes a value (e.g., -n, -L, -d, -f)
+                            if arg in ['-n', '-L', '-d', '-f', '-t', '-c'] and j + 1 < len(args):
+                                skip_next = True
+                            continue
+
+                        # Skip pure numbers (they're likely option values, not paths)
+                        try:
+                            float(arg)
+                            resolved_args.append(arg)
+                            continue
+                        except ValueError:
+                            pass
+
+                        # Resolve path
+                        resolved_args.append(self.resolve_path(arg))
                     args = resolved_args
 
                 # Create streams - always capture to buffer
@@ -1567,13 +1588,32 @@ class Shell:
             # Using metadata instead of hardcoded list
             if CommandMetadata.needs_path_resolution(cmd):
                 resolved_args = []
-                for arg in args:
+                skip_next = False
+                for j, arg in enumerate(args):
+                    # Skip if this is a flag value (e.g., the "2" in "-n 2")
+                    if skip_next:
+                        resolved_args.append(arg)
+                        skip_next = False
+                        continue
+
                     # Skip flags (starting with -)
                     if arg.startswith('-'):
                         resolved_args.append(arg)
-                    else:
-                        # Resolve path
-                        resolved_args.append(self.resolve_path(arg))
+                        # Check if this flag takes a value (e.g., -n, -L, -d, -f)
+                        if arg in ['-n', '-L', '-d', '-f', '-t', '-c'] and j + 1 < len(args):
+                            skip_next = True
+                        continue
+
+                    # Skip pure numbers (they're likely option values, not paths)
+                    try:
+                        float(arg)
+                        resolved_args.append(arg)
+                        continue
+                    except ValueError:
+                        pass
+
+                    # Resolve path
+                    resolved_args.append(self.resolve_path(arg))
                 args = resolved_args
 
             # Create streams

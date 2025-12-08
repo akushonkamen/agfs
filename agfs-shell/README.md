@@ -64,9 +64,9 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - **Functions**: User-defined functions with parameters, local variables, and return values (non-recursive)
 - **Comments**: `#` and `//` style comments
 
-### Built-in Commands (41+)
+### Built-in Commands (42+)
 - **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, mv, stat, cp, upload, download
-- **Text Processing**: echo, grep, jq, wc, head, tail, sort, uniq, tr, rev, cut
+- **Text Processing**: echo, grep, jq, wc, head, tail, tee, sort, uniq, tr, rev, cut
 - **Path Utilities**: basename, dirname
 - **Variables**: export, env, unset, local
 - **Testing**: test, [ ]
@@ -761,14 +761,36 @@ head -n 5 /local/file.txt    # First 5 lines
 cat /local/file.txt | head -n 20
 ```
 
-#### tail [-n count]
-Output last N lines (default 10).
+#### tail [-n count] [-f] [-F] [file...]
+Output last N lines (default 10). With `-f`, continuously follow the file and output new lines as they are appended. **Only works with AGFS files.**
 
 ```bash
 tail /local/file.txt         # Last 10 lines
 tail -n 5 /local/file.txt    # Last 5 lines
-cat /local/file.txt | tail -n 20
+tail -f /local/app.log       # Follow mode: show last 10 lines, then continuously follow
+tail -n 20 -f /local/app.log # Show last 20 lines, then follow
+tail -F /streamfs/live.log   # Stream mode: continuously read from stream
+tail -F /streamrotate/metrics.log | grep ERROR  # Filter stream data
+cat /local/file.txt | tail -n 20  # Via pipeline
 ```
+
+**Follow Mode (`-f`):**
+- For regular files on localfs, s3fs, etc.
+- First shows the last n lines, then follows new content
+- Polls the file every 100ms for size changes
+- Perfect for monitoring log files
+- Press Ctrl+C to exit follow mode
+- Uses efficient offset-based reading to only fetch new content
+
+**Stream Mode (`-F`):**
+- **For filesystems that support stream API** (streamfs, streamrotatefs, etc.)
+- Continuously reads from the stream without loading history
+- Does NOT show historical data - only new data from the moment you start
+- Uses streaming read to handle infinite streams efficiently
+- Will error if the filesystem doesn't support streaming
+- Perfect for real-time monitoring: `tail -F /streamfs/events.log`
+- Works great with pipelines: `tail -F /streamrotate/app.log | grep ERROR`
+- Press Ctrl+C to exit
 
 #### sort [-r]
 Sort lines alphabetically.
@@ -817,6 +839,40 @@ echo "2024-01-15" | cut -c 6-                # 01-15
 # Process file
 cat /local/data.csv | cut -f 2,4 -d ',' | sort
 ```
+
+#### tee [-a] [file...]
+Read from stdin and write to both stdout and files. **Only works with AGFS files.**
+
+```bash
+# Output to screen and save to file
+echo "Hello" | tee /local/tmp/output.txt
+
+# Multiple files
+cat /local/app.log | grep ERROR | tee /local/tmp/errors.txt /s3fs/logs/errors.log
+
+# Append mode
+echo "New line" | tee -a /local/tmp/log.txt
+
+# Real-world pipeline example
+tail -f /local/tmp/app.log | grep ERROR | tee /s3fs/log/errors.log
+
+# With tail -F for streams
+tail -F /streamfs/events.log | grep CRITICAL | tee /local/tmp/critical.log
+```
+
+**Options:**
+- `-a`: Append to files instead of overwriting
+
+**Features:**
+- **Streaming output**: Writes to stdout line-by-line with immediate flush for real-time display
+- **Streaming write**: Uses iterator-based streaming write to AGFS (non-append mode)
+- **Multiple files**: Can write to multiple destinations simultaneously
+- Works seamlessly in pipelines with `tail -f` and `tail -F`
+
+**Use Cases:**
+- Save pipeline output while still viewing it
+- Log filtered data to multiple destinations
+- Monitor logs in real-time while saving errors to a file
 
 ### Path Utilities
 
