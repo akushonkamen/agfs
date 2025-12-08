@@ -1,5 +1,4 @@
 # <img src="./assets/logo-white.png" alt="AGFS Logo" height="40" style="vertical-align: middle;"/>
----
 
 Aggregated File System (or Agent FS), originally known as pfs (Plugin File System)
 
@@ -147,6 +146,7 @@ agfs:/>
 See more details in:
 - [agfs-shell/README.md](https://github.com/c4pt0r/agfs/blob/master/agfs-shell/README.md)
 - [agfs-server/README.md](https://github.com/c4pt0r/agfs/blob/master/agfs-server/README.md)
+
 
 
 
