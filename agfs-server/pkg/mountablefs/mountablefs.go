@@ -747,7 +747,7 @@ func (mfs *MountableFS) OpenStream(path string) (filesystem.StreamReader, error)
 		return streamer.OpenStream(relPath)
 	}
 
-	log.Warnf("[mountablefs] OpenStream: filesystem does not support streaming: %s (fs type: %T)", path, fs)
+	log.Debugf("[mountablefs] OpenStream: filesystem does not support streaming: %s (fs type: %T)", path, fs)
 	return nil, fmt.Errorf("filesystem does not support streaming: %s", path)
 }
 

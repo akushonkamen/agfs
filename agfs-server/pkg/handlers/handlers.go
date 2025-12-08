@@ -22,19 +22,21 @@ import (
 
 // Handler wraps the FileSystem and provides HTTP handlers
 type Handler struct {
-	fs         filesystem.FileSystem
-	version    string
-	gitCommit  string
-	buildTime  string
+	fs             filesystem.FileSystem
+	version        string
+	gitCommit      string
+	buildTime      string
+	trafficMonitor *TrafficMonitor
 }
 
 // NewHandler creates a new Handler
-func NewHandler(fs filesystem.FileSystem) *Handler {
+func NewHandler(fs filesystem.FileSystem, trafficMonitor *TrafficMonitor) *Handler {
 	return &Handler{
-		fs:        fs,
-		version:   "dev",
-		gitCommit: "unknown",
-		buildTime: "unknown",
+		fs:             fs,
+		version:        "dev",
+		gitCommit:      "unknown",
+		buildTime:      "unknown",
+		trafficMonitor: trafficMonitor,
 	}
 }
 
@@ -214,6 +216,10 @@ func (h *Handler) ReadFile(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.WriteHeader(http.StatusOK)
 			w.Write(data) // Return partial data with 200 OK
+			// Record downstream traffic
+			if h.trafficMonitor != nil && len(data) > 0 {
+				h.trafficMonitor.RecordRead(int64(len(data)))
+			}
 			return
 		}
 		// Map error to appropriate HTTP status code
@@ -225,6 +231,11 @@ func (h *Handler) ReadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
+
+	// Record downstream traffic
+	if h.trafficMonitor != nil && len(data) > 0 {
+		h.trafficMonitor.RecordRead(int64(len(data)))
+	}
 }
 
 // WriteFile handles PUT /files?path=<path>
@@ -239,6 +250,11 @@ func (h *Handler) WriteFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
+	}
+
+	// Record upstream traffic
+	if h.trafficMonitor != nil && len(data) > 0 {
+		h.trafficMonitor.RecordWrite(int64(len(data)))
 	}
 
 	response, err := h.fs.Write(path, data)
@@ -733,6 +749,10 @@ func (h *Handler) streamFromStreamReader(w http.ResponseWriter, r *http.Request,
 				if writeErr != nil {
 					log.Debugf("Error writing chunk: %v (this is normal if client disconnected)", writeErr)
 					return
+				}
+				// Record downstream traffic
+				if h.trafficMonitor != nil && n > 0 {
+					h.trafficMonitor.RecordRead(int64(n))
 				}
 				offset += n
 				// Flush after each piece

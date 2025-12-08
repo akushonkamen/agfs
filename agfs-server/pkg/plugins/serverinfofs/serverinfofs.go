@@ -15,8 +15,14 @@ import (
 
 // ServerInfoFSPlugin provides server metadata and information
 type ServerInfoFSPlugin struct {
-	startTime time.Time
-	version   string
+	startTime      time.Time
+	version        string
+	trafficMonitor TrafficStatsProvider
+}
+
+// TrafficStatsProvider provides traffic statistics
+type TrafficStatsProvider interface {
+	GetStats() interface{}
 }
 
 // NewServerInfoFSPlugin creates a new ServerInfoFS plugin
@@ -25,6 +31,11 @@ func NewServerInfoFSPlugin() *ServerInfoFSPlugin {
 		startTime: time.Now(),
 		version:   "1.0.0",
 	}
+}
+
+// SetTrafficMonitor sets the traffic monitor for the plugin
+func (p *ServerInfoFSPlugin) SetTrafficMonitor(tm TrafficStatsProvider) {
+	p.trafficMonitor = tm
 }
 
 func (p *ServerInfoFSPlugin) Name() string {
@@ -73,10 +84,15 @@ USAGE:
   View server info:
     cat /info
 
+  View real-time traffic:
+    cat /traffic
+
 FILES:
   /version  - Server version information
   /uptime   - Server uptime since start
   /info     - Complete server information (JSON)
+  /stats    - Runtime statistics (goroutines, memory)
+  /traffic  - Real-time network traffic statistics
   /README   - This file
 
 EXAMPLES:
@@ -95,6 +111,18 @@ EXAMPLES:
     "uptime": "5m30s",
     "go_version": "go1.21",
     ...
+  }
+
+  # View real-time traffic
+  agfs:/> cat /serverinfofs/traffic
+  {
+    "downstream_bps": 2621440,
+    "upstream_bps": 1258291,
+    "peak_downstream_bps": 11010048,
+    "peak_upstream_bps": 5452595,
+    "total_download_bytes": 1073741824,
+    "total_upload_bytes": 536870912,
+    "uptime_seconds": 3600
   }
 `
 }
@@ -118,12 +146,13 @@ const (
 	fileUptime     = "/uptime"
 	fileVersion    = "/version"
 	fileStats      = "/stats"
+	fileTraffic    = "/traffic"
 	fileReadme     = "/README"
 )
 
 func (fs *serverInfoFS) isValidPath(path string) bool {
 	switch path {
-	case "/", fileServerInfo, fileUptime, fileVersion, fileStats, fileReadme:
+	case "/", fileServerInfo, fileUptime, fileVersion, fileStats, fileTraffic, fileReadme:
 		return true
 	default:
 		return false
@@ -195,6 +224,17 @@ func (fs *serverInfoFS) Read(path string, offset int64, size int64) ([]byte, err
 			return nil, err
 		}
 
+	case fileTraffic:
+		if fs.plugin.trafficMonitor == nil {
+			data = []byte("Traffic monitoring not available")
+		} else {
+			stats := fs.plugin.trafficMonitor.GetStats()
+			data, err = json.MarshalIndent(stats, "", "  ")
+			if err != nil {
+				return nil, err
+			}
+		}
+
 	case fileReadme:
 		data = []byte(fs.plugin.GetReadme())
 
@@ -243,6 +283,7 @@ func (fs *serverInfoFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 	uptimeData, _ := fs.Read(fileUptime, 0, -1)
 	versionData, _ := fs.Read(fileVersion, 0, -1)
 	statsData, _ := fs.Read(fileStats, 0, -1)
+	trafficData, _ := fs.Read(fileTraffic, 0, -1)
 
 	return []filesystem.FileInfo{
 		{
@@ -284,6 +325,14 @@ func (fs *serverInfoFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 			ModTime: now,
 			IsDir:   false,
 			Meta:    filesystem.MetaData{Name: "serverinfofs", Type: "info"},
+		},
+		{
+			Name:    "traffic",
+			Size:    int64(len(trafficData)),
+			Mode:    0444,
+			ModTime: now,
+			IsDir:   false,
+			Meta:    filesystem.MetaData{Name: "serverinfofs", Type: "traffic"},
 		},
 	}, nil
 }

@@ -218,6 +218,9 @@ func main() {
 	// Create mountable file system
 	mfs := mountablefs.NewMountableFS(poolConfig)
 
+	// Create traffic monitor early so it can be injected into plugins during mounting
+	trafficMonitor := handlers.NewTrafficMonitor()
+
 	// Register plugin factories for dynamic mounting
 	for pluginName, factory := range availablePlugins {
 		// Capture factory in local variable to avoid closure issues
@@ -249,6 +252,13 @@ func main() {
 		if pluginName == "httpfs" {
 			if httpfsPlugin, ok := p.(*httpfs.HTTPFSPlugin); ok {
 				httpfsPlugin.SetRootFS(mfs)
+			}
+		}
+
+		// Special handling for serverinfofs: inject traffic monitor
+		if pluginName == "serverinfofs" {
+			if serverInfoPlugin, ok := p.(*serverinfofs.ServerInfoFSPlugin); ok {
+				serverInfoPlugin.SetTrafficMonitor(trafficMonitor)
 			}
 		}
 
@@ -344,7 +354,7 @@ func main() {
 	}
 
 	// Create handlers
-	handler := handlers.NewHandler(mfs)
+	handler := handlers.NewHandler(mfs, trafficMonitor)
 	handler.SetVersionInfo(Version, GitCommit, BuildTime)
 	pluginHandler := handlers.NewPluginHandler(mfs)
 
