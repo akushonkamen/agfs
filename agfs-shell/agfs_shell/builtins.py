@@ -3621,30 +3621,26 @@ def cmd_return(process: Process) -> int:
     return EXIT_CODE_RETURN
 
 
-# Registry of built-in commands
-BUILTINS = {
-    'echo': cmd_echo,
+# Registry of built-in commands (NOT YET MIGRATED)
+# These commands are still in this file and haven't been moved to the commands/ directory
+_OLD_BUILTINS = {
+    # Commands still in builtins.py:
     'cat': cmd_cat,
     'grep': cmd_grep,
-    'wc': cmd_wc,
     'head': cmd_head,
     'tail': cmd_tail,
     'tee': cmd_tee,
     'sort': cmd_sort,
     'uniq': cmd_uniq,
     'tr': cmd_tr,
-    'rev': cmd_rev,
     'cut': cmd_cut,
     'ls': cmd_ls,
     'tree': cmd_tree,
-    'pwd': cmd_pwd,
     'cd': cmd_cd,
     'mkdir': cmd_mkdir,
     'touch': cmd_touch,
     'rm': cmd_rm,
     'mv': cmd_mv,
-    'basename': cmd_basename,
-    'dirname': cmd_dirname,
     'export': cmd_export,
     'env': cmd_env,
     'unset': cmd_unset,
@@ -3665,11 +3661,20 @@ BUILTINS = {
     'continue': cmd_continue,
     'local': cmd_local,
     'return': cmd_return,
-    'true': cmd_true,
-    'false': cmd_false,
     '?': cmd_help,
     'help': cmd_help,
 }
+
+# Load all commands from the new commands/ directory
+# These commands have been migrated to individual files
+from .commands import load_all_commands, BUILTINS as NEW_COMMANDS
+
+# Load all command modules to populate the new registry
+load_all_commands()
+
+# Combine old and new commands for backward compatibility
+# New commands take precedence if there's a duplicate
+BUILTINS = {**_OLD_BUILTINS, **NEW_COMMANDS}
 
 
 def get_builtin(command: str):

@@ -33,7 +33,7 @@ RUN python3 build.py
 FROM alpine:latest
 
 # Install runtime dependencies (including Python 3 for agfs-shell)
-RUN apk add --no-cache ca-certificates sqlite-libs python3 jq libonig
+RUN apk add --no-cache ca-certificates sqlite-libs python3 jq oniguruma
 
 # Create app directory
 WORKDIR /app
