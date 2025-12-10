@@ -136,6 +136,13 @@ Calculate the hash digest of a file.
 }
 ```
 
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/digest" \
+  -H "Content-Type: application/json" \
+  -d '{"algorithm": "xxh3", "path": "/memfs/large_file.iso"}'
+```
+
 ### Grep / Search
 Search for a regex pattern within files.
 
@@ -169,6 +176,13 @@ Search for a regex pattern within files.
 **Response (Stream):**
 Returns NDJSON (Newline Delimited JSON) stream of matches.
 
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/grep" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/memfs/logs", "pattern": "error|warning", "recursive": true, "case_insensitive": true}'
+```
+
 ---
 
 ## Directory Operations
@@ -189,6 +203,11 @@ Get a list of files in a directory.
     { "name": "dir1", "size": 0, "isDir": true, ... }
   ]
 }
+```
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/directories?path=/memfs"
 ```
 
 ### Create Directory
@@ -219,6 +238,11 @@ Get metadata for a file or directory.
 
 **Response:** Returns a [File Info Object](#file-info-object).
 
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/stat?path=/memfs/data.txt"
+```
+
 ### Rename
 Rename or move a file/directory.
 
@@ -234,6 +258,13 @@ Rename or move a file/directory.
 }
 ```
 
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/rename?path=/memfs/old_name.txt" \
+  -H "Content-Type: application/json" \
+  -d '{"newPath": "/memfs/new_name.txt"}'
+```
+
 ### Change Permissions (Chmod)
 Change file mode bits.
 
@@ -247,6 +278,13 @@ Change file mode bits.
 {
   "mode": 420  // 0644 in decimal
 }
+```
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/chmod?path=/memfs/data.txt" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": 420}'
 ```
 
 ---
@@ -271,6 +309,11 @@ List all currently mounted plugins.
 }
 ```
 
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/mounts"
+```
+
 ### Mount Plugin
 Mount a new plugin instance.
 
@@ -287,6 +330,13 @@ Mount a new plugin instance.
 }
 ```
 
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/mount" \
+  -H "Content-Type: application/json" \
+  -d '{"fstype": "memfs", "path": "/my_memfs", "config": {"init_dirs": ["/tmp"]}}'
+```
+
 ### Unmount Plugin
 Unmount a plugin.
 
@@ -297,6 +347,13 @@ Unmount a plugin.
 {
   "path": "/my_memfs"
 }
+```
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/unmount" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/my_memfs"}'
 ```
 
 ### List Plugins
@@ -322,6 +379,11 @@ List all available (loaded) plugins, including external ones.
 }
 ```
 
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/plugins"
+```
+
 ### Load External Plugin
 Load a dynamic library plugin (.so/.dylib/.dll) or WASM plugin.
 
@@ -335,6 +397,13 @@ Load a dynamic library plugin (.so/.dylib/.dll) or WASM plugin.
 ```
 *Note: `library_path` can also be a URL (`http://...`) or an AGFS path (`agfs://...`) to load remote plugins.*
 
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/plugins/load" \
+  -H "Content-Type: application/json" \
+  -d '{"library_path": "./plugins/myplugin.so"}'
+```
+
 ### Unload External Plugin
 Unload a previously loaded external plugin.
 
@@ -345,6 +414,13 @@ Unload a previously loaded external plugin.
 {
   "library_path": "./plugins/myplugin.so"
 }
+```
+
+**Example:**
+```bash
+curl -X POST "http://localhost:8080/api/v1/plugins/unload" \
+  -H "Content-Type: application/json" \
+  -d '{"library_path": "./plugins/myplugin.so"}'
 ```
 
 ---
@@ -364,4 +440,9 @@ Check server status and version.
   "gitCommit": "abcdef",
   "buildTime": "2023-..."
 }
+```
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/health"
 ```
