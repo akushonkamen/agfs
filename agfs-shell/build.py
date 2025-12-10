@@ -301,7 +301,7 @@ Examples:
 def get_version_string():
     """Get version string for README"""
     try:
-        # Read from __init__.py
+        # Read from agfs_shell/__init__.py
         version_file = Path(__file__).parent / "agfs_shell" / "__init__.py"
         namespace = {}
         with open(version_file) as f:
