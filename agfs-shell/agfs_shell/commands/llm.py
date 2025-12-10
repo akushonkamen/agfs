@@ -143,10 +143,9 @@ def cmd_llm(process: Process) -> int:
     # Get stdin content if available (keep as binary first)
     stdin_binary = None
     stdin_text = None
-    stdin_value = process.stdin.get_value()
-    if stdin_value:
-        stdin_binary = stdin_value
-    else:
+    # Use read() instead of get_value() to properly support streaming pipelines
+    stdin_binary = process.stdin.read()
+    if not stdin_binary:
         # Try to read from real stdin (but don't block if not available)
         try:
             import select
