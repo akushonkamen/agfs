@@ -335,8 +335,13 @@ func (h *Handler) Stat(w http.ResponseWriter, r *http.Request) {
 
 	info, err := h.fs.Stat(path)
 	if err != nil {
-		log.Errorf("Stat error for path %s: %v", path, err)
 		status := mapErrorToStatus(err)
+		// "Not found" is expected during cp/mv operations, use debug level
+		if status == http.StatusNotFound {
+			log.Debugf("Stat: path not found: %s", path)
+		} else {
+			log.Errorf("Stat error for path %s: %v", path, err)
+		}
 		writeError(w, status, err.Error())
 		return
 	}

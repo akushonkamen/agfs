@@ -69,12 +69,7 @@ func (fs *S3FS) Create(path string) error {
 	}
 
 	// Create empty file
-	err = fs.client.PutObject(ctx, path, []byte{})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return fs.client.PutObject(ctx, path, []byte{})
 }
 
 func (fs *S3FS) Mkdir(path string, perm uint32) error {
@@ -134,7 +129,7 @@ func (fs *S3FS) Remove(path string) error {
 	}
 
 	if !dirExists {
-		return fmt.Errorf("no such file or directory: %s", path)
+		return filesystem.ErrNotFound
 	}
 
 	// Check if directory is empty
@@ -172,7 +167,7 @@ func (fs *S3FS) Read(path string, offset int64, size int64) ([]byte, error) {
 	data, err := fs.client.GetObject(ctx, path)
 	if err != nil {
 		if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "NotFound") {
-			return nil, fmt.Errorf("no such file: %s", path)
+			return nil, filesystem.ErrNotFound
 		}
 		return nil, err
 	}
@@ -194,25 +189,13 @@ func (fs *S3FS) Write(path string, data []byte, offset int64, flags filesystem.W
 		return 0, fmt.Errorf("S3 does not support offset writes")
 	}
 
-	// Check if it's a directory
-	dirExists, _ := fs.client.DirectoryExists(ctx, path)
-	if dirExists {
+	// Skip directory checks for performance - S3 PutObject will overwrite anyway
+	// The path ending with "/" check is sufficient for directory detection
+	if strings.HasSuffix(path, "/") {
 		return 0, fmt.Errorf("is a directory: %s", path)
 	}
 
-	// Check if parent directory exists
-	parent := getParentPath(path)
-	if parent != "" {
-		parentExists, err := fs.client.DirectoryExists(ctx, parent)
-		if err != nil {
-			return 0, fmt.Errorf("failed to check parent directory: %w", err)
-		}
-		if !parentExists {
-			return 0, fmt.Errorf("parent directory does not exist: %s", parent)
-		}
-	}
-
-	// Write to S3
+	// Write to S3 directly - S3 will create parent "directories" implicitly
 	err := fs.client.PutObject(ctx, path, data)
 	if err != nil {
 		return 0, err
@@ -235,7 +218,7 @@ func (fs *S3FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 			return nil, fmt.Errorf("failed to check directory: %w", err)
 		}
 		if !exists {
-			return nil, fmt.Errorf("no such directory: %s", path)
+			return nil, filesystem.ErrNotFound
 		}
 	}
 
@@ -247,10 +230,14 @@ func (fs *S3FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 
 	var files []filesystem.FileInfo
 	for _, obj := range objects {
+		mode := uint32(0644)
+		if obj.IsDir {
+			mode = 0755
+		}
 		files = append(files, filesystem.FileInfo{
 			Name:    obj.Key,
 			Size:    obj.Size,
-			Mode:    0644,
+			Mode:    mode,
 			ModTime: obj.LastModified,
 			IsDir:   obj.IsDir,
 			Meta: filesystem.MetaData{
@@ -336,7 +323,7 @@ func (fs *S3FS) Stat(path string) (*filesystem.FileInfo, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("no such file or directory: %s", path)
+	return nil, filesystem.ErrNotFound
 }
 
 func (fs *S3FS) Rename(oldPath, newPath string) error {
@@ -353,7 +340,7 @@ func (fs *S3FS) Rename(oldPath, newPath string) error {
 		return fmt.Errorf("failed to check source: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("no such file or directory: %s", oldPath)
+		return filesystem.ErrNotFound
 	}
 
 	// Get the object
@@ -777,7 +764,7 @@ func (fs *S3FS) OpenStream(path string) (filesystem.StreamReader, error) {
 	body, err := fs.client.GetObjectStream(ctx, path)
 	if err != nil {
 		if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "NotFound") {
-			return nil, fmt.Errorf("no such file: %s", path)
+			return nil, filesystem.ErrNotFound
 		}
 		return nil, err
 	}

@@ -798,6 +798,36 @@ func (qfs *queueFS) Stat(path string) (*filesystem.FileInfo, error) {
 			name = "/"
 		}
 
+		// Check if queue exists
+		qfs.plugin.mu.RLock()
+		exists, err := qfs.plugin.backend.QueueExists(queueName)
+		if err != nil {
+			qfs.plugin.mu.RUnlock()
+			return nil, fmt.Errorf("failed to check queue existence: %w", err)
+		}
+
+		// If queue doesn't exist, check if it's a parent directory of existing queues
+		if !exists {
+			queues, err := qfs.plugin.backend.ListQueues(queueName)
+			if err != nil {
+				qfs.plugin.mu.RUnlock()
+				return nil, fmt.Errorf("failed to list queues: %w", err)
+			}
+			// Check if any queue starts with this path as a prefix
+			hasChildren := false
+			for _, q := range queues {
+				if strings.HasPrefix(q, queueName+"/") {
+					hasChildren = true
+					break
+				}
+			}
+			if !hasChildren {
+				qfs.plugin.mu.RUnlock()
+				return nil, fmt.Errorf("no such file or directory: %s", path)
+			}
+		}
+		qfs.plugin.mu.RUnlock()
+
 		return &filesystem.FileInfo{
 			Name:    name,
 			Size:    0,

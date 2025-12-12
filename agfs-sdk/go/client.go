@@ -716,7 +716,7 @@ func (c *Client) WriteHandle(handleID int64, data []byte, offset int64) (int, er
 
 	// Parse bytes written from response
 	var result struct {
-		BytesWritten int `json:"bytesWritten"`
+		BytesWritten int `json:"bytes_written"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		// If parsing fails, assume all bytes were written
