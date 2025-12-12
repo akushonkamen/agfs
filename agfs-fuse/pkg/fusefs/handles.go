@@ -65,6 +65,7 @@ func (hm *HandleManager) Open(path string, flags agfs.OpenFlag, mode uint32) (ui
 		// Check if error is because HandleFS is not supported
 		if isHandleNotSupportedError(err) {
 			// Fall back to local handle management
+			fmt.Printf("DEBUG: HandleFS not supported for %s, using local handle\n", path)
 			hm.handles[fuseHandle] = &handleInfo{
 				htype: handleTypeLocal,
 				path:  path,
@@ -73,8 +74,11 @@ func (hm *HandleManager) Open(path string, flags agfs.OpenFlag, mode uint32) (ui
 			}
 			return fuseHandle, nil
 		}
+		fmt.Printf("DEBUG: Failed to open handle for %s: %v\n", path, err)
 		return 0, fmt.Errorf("failed to open handle: %w", err)
 	}
+
+	fmt.Printf("DEBUG: Opened remote handle for %s (handle=%d)\n", path, agfsHandle)
 
 	// Server supports HandleFS
 	hm.handles[fuseHandle] = &handleInfo{

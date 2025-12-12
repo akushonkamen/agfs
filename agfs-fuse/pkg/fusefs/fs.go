@@ -26,10 +26,9 @@ type AGFSFS struct {
 
 // Config contains filesystem configuration
 type Config struct {
-	ServerURL    string
-	CacheTTL     time.Duration
-	WriteWorkers int // Number of concurrent write workers (default: 8)
-	Debug        bool
+	ServerURL string
+	CacheTTL  time.Duration
+	Debug     bool
 }
 
 // NewAGFSFS creates a new AGFS FUSE filesystem
