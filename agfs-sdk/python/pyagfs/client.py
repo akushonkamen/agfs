@@ -5,7 +5,7 @@ import time
 from typing import List, Dict, Any, Optional, Union, Iterator, BinaryIO
 from requests.exceptions import ConnectionError, Timeout, RequestException
 
-from .exceptions import AGFSClientError
+from .exceptions import AGFSClientError, AGFSNotSupportedError
 
 
 class AGFSClient:
@@ -45,6 +45,16 @@ class AGFSClient:
             # Extract useful error information from response
             if hasattr(e, 'response') and e.response is not None:
                 status_code = e.response.status_code
+
+                # Special handling for 501 Not Implemented - always raise typed error
+                if status_code == 501:
+                    try:
+                        error_data = e.response.json()
+                        error_msg = error_data.get("error", "Operation not supported")
+                    except (ValueError, KeyError, TypeError):
+                        error_msg = "Operation not supported"
+                    raise AGFSNotSupportedError(error_msg)
+
                 # Try to get error message from JSON response first (priority)
                 try:
                     error_data = e.response.json()
@@ -83,6 +93,29 @@ class AGFSClient:
         response = self.session.get(f"{self.api_base}/health", timeout=self.timeout)
         response.raise_for_status()
         return response.json()
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        """Get server capabilities
+
+        Returns:
+            Dict containing 'version' and 'features' list.
+            e.g., {'version': '1.4.0', 'features': ['handlefs', 'grep', ...]}
+        """
+        try:
+            response = self.session.get(f"{self.api_base}/capabilities", timeout=self.timeout)
+            
+            # If capabilities endpoint doesn't exist (older server), return empty capabilities
+            if response.status_code == 404:
+                return {"version": "unknown", "features": []}
+                
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            # If capabilities check fails, treat it as unknown/empty rather than error
+            # unless it's a connection error
+            if isinstance(e, ConnectionError):
+                self._handle_request_error(e)
+            return {"version": "unknown", "features": []}
 
     def ls(self, path: str = "/") -> List[Dict[str, Any]]:
         """List directory contents"""

@@ -124,6 +124,9 @@ func mapErrorToStatus(err error) int {
 	if errors.Is(err, filesystem.ErrAlreadyExists) {
 		return http.StatusConflict
 	}
+	if errors.Is(err, filesystem.ErrNotSupported) {
+		return http.StatusNotImplemented
+	}
 	return http.StatusInternalServerError
 }
 
@@ -517,6 +520,27 @@ func (h *Handler) calculateMD5Digest(path string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+// CapabilitiesResponse represents the server capabilities
+type CapabilitiesResponse struct {
+	Version   string   `json:"version"`
+	Features  []string `json:"features"`
+}
+
+// Capabilities handles GET /capabilities
+func (h *Handler) Capabilities(w http.ResponseWriter, r *http.Request) {
+	response := CapabilitiesResponse{
+		Version: h.version,
+		Features: []string{
+			"handlefs", // File handles for stateful operations
+			"grep",     // Server-side grep
+			"digest",   // Server-side checksums
+			"stream",   // Streaming read
+			"touch",    // Touch/update timestamp
+		},
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 // HealthResponse represents the health check response
 type HealthResponse struct {
 	Status    string `json:"status"`
@@ -598,6 +622,13 @@ func (h *Handler) Touch(w http.ResponseWriter, r *http.Request) {
 // SetupRoutes sets up all HTTP routes with /api/v1 prefix
 func (h *Handler) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/health", h.Health)
+	mux.HandleFunc("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.Capabilities(w, r)
+	})
 
 	// Setup handle routes (file handles for stateful operations)
 	h.SetupHandleRoutes(mux)

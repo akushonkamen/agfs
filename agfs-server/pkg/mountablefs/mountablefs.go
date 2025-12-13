@@ -826,7 +826,7 @@ func (mfs *MountableFS) OpenHandle(path string, flags filesystem.OpenFlag, mode 
 	fs := mount.Plugin.GetFileSystem()
 	handleFS, ok := fs.(filesystem.HandleFS)
 	if !ok {
-		return nil, fmt.Errorf("filesystem at %s does not support file handles", mount.Path)
+		return nil, filesystem.NewNotSupportedError("openhandle", path)
 	}
 
 	// Open handle in the underlying filesystem

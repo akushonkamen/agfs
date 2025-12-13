@@ -117,6 +117,27 @@ func TestClient_ErrorHandling(t *testing.T) {
 	}
 }
 
+func TestClient_OpenHandleNotSupported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/handles/open" {
+			w.WriteHeader(http.StatusNotImplemented)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "filesystem does not support file handles"})
+			return
+		}
+		t.Errorf("unexpected request to %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	_, err := client.OpenHandle("/test/file.txt", 0, 0)
+	if err == nil {
+		t.Errorf("expected ErrNotSupported, got nil")
+	}
+	if err != ErrNotSupported {
+		t.Errorf("expected ErrNotSupported, got %v", err)
+	}
+}
+
 func TestNormalizeBaseURL(t *testing.T) {
 	tests := []struct {
 		name     string

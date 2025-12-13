@@ -23,6 +23,9 @@ var (
 
 	// ErrNotDirectory indicates the path is not a directory when one was expected
 	ErrNotDirectory = errors.New("not a directory")
+
+	// ErrNotSupported indicates the operation is not supported by this filesystem
+	ErrNotSupported = errors.New("operation not supported")
 )
 
 // NotFoundError represents a file or directory not found error with context
@@ -111,6 +114,23 @@ func (e *NotDirectoryError) Is(target error) bool {
 	return target == ErrNotDirectory
 }
 
+// NotSupportedError represents an error when an operation is not supported by the filesystem
+type NotSupportedError struct {
+	Path string
+	Op   string // Operation that failed (e.g., "openhandle", "stream")
+}
+
+func (e *NotSupportedError) Error() string {
+	if e.Op != "" {
+		return fmt.Sprintf("%s: %s: operation not supported", e.Op, e.Path)
+	}
+	return fmt.Sprintf("%s: operation not supported", e.Path)
+}
+
+func (e *NotSupportedError) Is(target error) bool {
+	return target == ErrNotSupported
+}
+
 // Helper functions to create common errors
 
 // NewNotFoundError creates a new NotFoundError
@@ -136,4 +156,9 @@ func NewAlreadyExistsError(resource, path string) error {
 // NewNotDirectoryError creates a new NotDirectoryError
 func NewNotDirectoryError(path string) error {
 	return &NotDirectoryError{Path: path}
+}
+
+// NewNotSupportedError creates a new NotSupportedError
+func NewNotSupportedError(op, path string) error {
+	return &NotSupportedError{Op: op, Path: path}
 }

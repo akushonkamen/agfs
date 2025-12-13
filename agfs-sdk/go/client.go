@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// Common errors
+var (
+	// ErrNotSupported is returned when the server or endpoint does not support the requested operation (HTTP 501)
+	ErrNotSupported = fmt.Errorf("operation not supported")
+)
+
 // Client is a Go client for AGFS HTTP API
 type Client struct {
 	baseURL    string
@@ -124,6 +130,10 @@ func (c *Client) handleErrorResponse(resp *http.Response) error {
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
+	}
+
+	if resp.StatusCode == http.StatusNotImplemented {
+		return ErrNotSupported
 	}
 
 	var errResp ErrorResponse
@@ -452,6 +462,43 @@ func (c *Client) Health() error {
 	return nil
 }
 
+// CapabilitiesResponse represents the server capabilities
+type CapabilitiesResponse struct {
+	Version  string   `json:"version"`
+	Features []string `json:"features"`
+}
+
+// GetCapabilities retrieves the server capabilities
+func (c *Client) GetCapabilities() (*CapabilitiesResponse, error) {
+	resp, err := c.doRequest(http.MethodGet, "/capabilities", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Fallback for older servers that don't have this endpoint
+		if resp.StatusCode == http.StatusNotFound {
+			return &CapabilitiesResponse{
+				Version:  "unknown",
+				Features: []string{},
+			}, nil
+		}
+		var errResp ErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+			return nil, fmt.Errorf("HTTP %d: failed to decode error response", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, errResp.Error)
+	}
+
+	var caps CapabilitiesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&caps); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &caps, nil
+}
+
 // ReadStream opens a streaming connection to read from a file
 // Returns an io.ReadCloser that streams data from the server
 // The caller is responsible for closing the reader
@@ -622,6 +669,9 @@ func (c *Client) OpenHandle(path string, flags OpenFlag, mode uint32) (int64, er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		if resp.StatusCode == http.StatusNotImplemented {
+			return 0, ErrNotSupported
+		}
 		var errResp ErrorResponse
 		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
 			return 0, fmt.Errorf("HTTP %d: failed to decode error response", resp.StatusCode)

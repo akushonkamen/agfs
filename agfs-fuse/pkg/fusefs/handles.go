@@ -1,8 +1,8 @@
 package fusefs
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -62,7 +62,7 @@ func (hm *HandleManager) Open(path string, flags agfs.OpenFlag, mode uint32) (ui
 
 	if err != nil {
 		// Check if error is because HandleFS is not supported
-		if isHandleNotSupportedError(err) {
+		if errors.Is(err, agfs.ErrNotSupported) {
 			// Fall back to local handle management
 			fmt.Printf("DEBUG: HandleFS not supported for %s, using local handle\n", path)
 			hm.handles[fuseHandle] = &handleInfo{
@@ -274,13 +274,3 @@ func (hm *HandleManager) Count() int {
 	return len(hm.handles)
 }
 
-// isHandleNotSupportedError checks if the error indicates HandleFS is not supported
-func isHandleNotSupportedError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "does not support file handles") ||
-		strings.Contains(errStr, "not support") ||
-		strings.Contains(errStr, "HandleFS")
-}
