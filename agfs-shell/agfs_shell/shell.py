@@ -1642,10 +1642,6 @@ class Shell:
                     total_bytes += len(chunk)
                     is_first_chunk = False
 
-                # Display write response if it contains data
-                if write_response and write_response != "OK":
-                    self.console.print(write_response, highlight=False)
-
                 exit_code = 0
                 stderr_data = b''
             except AGFSClientError as e:
@@ -1671,10 +1667,7 @@ class Shell:
                 append = (mode == 'append')
                 try:
                     # Use AGFS to write output file
-                    write_response = self.filesystem.write_file(output_file, stdout_data, append=append)
-                    # Display write response if it contains data
-                    if write_response and write_response != "OK":
-                        self.console.print(write_response, highlight=False)
+                    self.filesystem.write_file(output_file, stdout_data, append=append)
                 except AGFSClientError as e:
                     error_msg = self.filesystem.get_error_message(e)
                     self.console.print(f"[red]shell: {error_msg}[/red]", highlight=False)
