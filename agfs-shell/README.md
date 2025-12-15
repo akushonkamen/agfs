@@ -115,11 +115,11 @@ uv sync
 ```bash
 uv run agfs-shell
 
-agfs:/> echo "Hello, World!" > /local/hello.txt
-agfs:/> cat /local/hello.txt
+agfs:/> echo "Hello, World!" > /local/tmp/hello.txt
+agfs:/> cat /local/tmp/hello.txt
 Hello, World!
 
-agfs:/> ls /local | grep txt
+agfs:/> ls /local/tmp | grep txt
 hello.txt
 
 agfs:/> for i in 1 2 3; do
@@ -134,10 +134,10 @@ Count: 3
 
 ```bash
 # Using -c flag
-uv run agfs-shell -c "echo 'test' > /local/test.txt"
+uv run agfs-shell -c "echo 'test' > /local/tmp/test.txt"
 
 # With pipeline
-uv run agfs-shell -c "cat /local/data.txt | sort | uniq > /local/sorted.txt"
+uv run agfs-shell -c "cat /local/tmp/data.txt | sort | uniq > /local/tmp/sorted.txt"
 ```
 
 ### Execute Script File
@@ -150,7 +150,7 @@ cat > example.as << 'EOF'
 
 # Count files in directory
 count=0
-for file in /local/*; do
+for file in /local/tmp/*; do
     count=$((count + 1))
     echo "File $count: $file"
 done
@@ -181,8 +181,8 @@ echo "World"  // Inline comment works too
 command1 | command2 | command3
 
 # Examples
-cat /local/data.txt | grep "error" | wc -l
-ls /local | sort | head -n 10
+cat /local/tmp/data.txt | grep "error" | wc -l
+ls /local/tmp | sort | head -n 10
 ```
 
 ### Redirection
@@ -259,17 +259,14 @@ done
 ```bash
 # Using $() syntax (recommended)
 current_dir=$(pwd)
-file_count=$(ls /local | wc -l)
+file_count=$(ls /local/tmp | wc -l)
 today=$(date "+%Y-%m-%d")
 
 # Using backticks (also works)
-files=`ls /local`
-
-# Nested substitution
-newest_file=$(ls -t /local | head -n 1)
+files=`ls /local/tmp`
 
 # In strings
-echo "There are $(ls /local | wc -l) files in the directory"
+echo "There are $(ls /local/tmp | wc -l) files in the directory"
 ```
 
 ### Glob Patterns
@@ -282,9 +279,9 @@ test[123].log           # test1.log, test2.log, or test3.log
 file[a-z].txt           # file with single letter a-z
 
 # Examples
-cat /local/*.txt        # Concatenate all text files
-rm /local/temp_*        # Remove all temp_ files
-for file in /local/data_[0-9]*.json; do
+cat /local/tmp/*.txt        # Concatenate all text files
+rm /local/tmp/temp_*        # Remove all temp_ files
+for file in /local/tmp/data_[0-9]*.json; do
     echo "Processing $file"
 done
 ```
@@ -295,12 +292,12 @@ done
 
 ```bash
 # Basic if
-if [ -f /local/file.txt ]; then
+if [ -f /local/tmp/file.txt ]; then
     echo "File exists"
 fi
 
 # If-else
-if [ -d /local/mydir ]; then
+if [ -d /local/tmp/mydir ]; then
     echo "Directory exists"
 else
     echo "Directory not found"
@@ -328,18 +325,18 @@ for i in 1 2 3 4 5; do
 done
 
 # Loop over files
-for file in /local/*.txt; do
+for file in /local/tmp/*.txt; do
     echo "Processing $file"
     cat $file | wc -l
 done
 
 # Loop with command substitution
-for user in $(cat /local/users.txt); do
+for user in $(cat /local/tmp/users.txt); do
     echo "User: $user"
 done
 
 # Nested loops
-for dir in /local/projects/*; do
+for dir in /local/tmp/projects/*; do
     echo "Project: $(basename $dir)"
     for file in $dir/*.txt; do
         echo "  File: $(basename $file)"
@@ -373,13 +370,13 @@ done
 
 ```bash
 # && operator - execute second command only if first succeeds
-test -f /local/file.txt && echo "File exists"
+test -f /local/tmp/file.txt && echo "File exists"
 
 # || operator - execute second command only if first fails
-test -f /local/missing.txt || echo "File not found"
+test -f /local/tmp/missing.txt || echo "File not found"
 
 # Combining && and ||
-mkdir /local/data && echo "Created" || echo "Failed"
+mkdir /local/tmp/data && echo "Created" || echo "Failed"
 
 # Short-circuit evaluation
 false && echo "Not executed"
@@ -499,7 +496,7 @@ check_file() {
     fi
 }
 
-check_file /local/test.txt
+check_file /local/tmp/test.txt
 
 # Functions with loops
 sum_numbers() {
@@ -551,14 +548,14 @@ factorial() {
 
 ```bash
 # Variable expansion (default)
-cat << EOF > /local/config.txt
+cat << EOF > /local/tmp/config.txt
 Application: $APP_NAME
 Version: $VERSION
 Date: $(date)
 EOF
 
 # Literal mode (no expansion)
-cat << 'EOF' > /local/script.sh
+cat << 'EOF' > /local/tmp/script.sh
 #!/bin/bash
 echo "Price: $100"
 VAR="literal"
@@ -619,30 +616,30 @@ tree -h /local           # Human-readable sizes
 Concatenate and print files or stdin.
 
 ```bash
-cat /local/file.txt      # Display file
-cat file1.txt file2.txt  # Concatenate multiple
-cat                      # Read from stdin
-echo "hello" | cat       # Via pipeline
+cat /local/tmp/file.txt      # Display file
+cat file1.txt file2.txt      # Concatenate multiple
+cat                          # Read from stdin
+echo "hello" | cat           # Via pipeline
 ```
 
 #### mkdir path
 Create directory.
 
 ```bash
-mkdir /local/newdir
+mkdir /local/tmp/newdir
 
 # Note: mkdir does not support -p flag for creating parent directories
 # Create directories one by one:
-mkdir /local/a
-mkdir /local/a/b
-mkdir /local/a/b/c
+mkdir /local/tmp/a
+mkdir /local/tmp/a/b
+mkdir /local/tmp/a/b/c
 ```
 
 #### touch path
 Create empty file or update timestamp.
 
 ```bash
-touch /local/newfile.txt
+touch /local/tmp/newfile.txt
 touch file1.txt file2.txt file3.txt
 ```
 
@@ -650,51 +647,51 @@ touch file1.txt file2.txt file3.txt
 Remove file or directory.
 
 ```bash
-rm /local/file.txt       # Remove file
-rm -r /local/mydir       # Remove directory recursively
+rm /local/tmp/file.txt       # Remove file
+rm -r /local/tmp/mydir       # Remove directory recursively
 ```
 
 #### mv source dest
 Move or rename files/directories.
 
 ```bash
-mv /local/old.txt /local/new.txt     # Rename
-mv /local/file.txt /local/backup/    # Move to directory
-mv local:~/file.txt /local/          # From local filesystem to AGFS
-mv /local/file.txt local:~/          # From AGFS to local filesystem
+mv /local/tmp/old.txt /local/tmp/new.txt     # Rename
+mv /local/tmp/file.txt /local/tmp/backup/    # Move to directory
+mv local:~/file.txt /local/tmp/              # From local filesystem to AGFS
+mv /local/tmp/file.txt local:~/              # From AGFS to local filesystem
 ```
 
 #### stat path
 Display file status and metadata.
 
 ```bash
-stat /local/file.txt
+stat /local/tmp/file.txt
 ```
 
 #### cp [-r] source dest
 Copy files between local filesystem and AGFS.
 
 ```bash
-cp /local/file.txt /local/backup/file.txt           # Within AGFS
-cp local:~/data.csv /local/imports/data.csv         # Local to AGFS
-cp /local/report.txt local:~/Desktop/report.txt     # AGFS to local
-cp -r /local/mydir /local/backup/mydir              # Recursive copy
+cp /local/tmp/file.txt /local/tmp/backup/file.txt           # Within AGFS
+cp local:~/data.csv /local/tmp/imports/data.csv             # Local to AGFS
+cp /local/tmp/report.txt local:~/Desktop/report.txt         # AGFS to local
+cp -r /local/tmp/mydir /local/tmp/backup/mydir              # Recursive copy
 ```
 
 #### upload [-r] local_path agfs_path
 Upload files/directories from local to AGFS.
 
 ```bash
-upload ~/Documents/report.pdf /local/backup/
-upload -r ~/Projects/myapp /local/projects/
+upload ~/Documents/report.pdf /local/tmp/backup/
+upload -r ~/Projects/myapp /local/tmp/projects/
 ```
 
 #### download [-r] agfs_path local_path
 Download files/directories from AGFS to local.
 
 ```bash
-download /local/data.json ~/Downloads/
-download -r /local/logs ~/backup/logs/
+download /local/tmp/data.json ~/Downloads/
+download -r /local/tmp/logs ~/backup/logs/
 ```
 
 ### Text Processing
@@ -712,19 +709,19 @@ echo $HOME
 Search for patterns in text.
 
 ```bash
-grep "error" /local/app.log          # Basic search
-grep -i "ERROR" /local/app.log       # Case-insensitive
-grep -n "function" /local/code.py    # Show line numbers
-grep -c "TODO" /local/*.py           # Count matches
-grep -v "debug" /local/app.log       # Invert match (exclude)
-grep -l "import" /local/*.py         # Show filenames only
-grep "^error" /local/app.log         # Lines starting with 'error'
+grep "error" /local/tmp/app.log          # Basic search
+grep -i "ERROR" /local/tmp/app.log       # Case-insensitive
+grep -n "function" /local/tmp/code.py    # Show line numbers
+grep -c "TODO" /local/tmp/*.py           # Count matches
+grep -v "debug" /local/tmp/app.log       # Invert match (exclude)
+grep -l "import" /local/tmp/*.py         # Show filenames only
+grep "^error" /local/tmp/app.log         # Lines starting with 'error'
 
 # Multiple files
 grep "pattern" file1.txt file2.txt
 
 # With pipeline
-cat /local/app.log | grep -i error | grep -v warning
+cat /local/tmp/app.log | grep -i error | grep -v warning
 ```
 
 #### jq filter [files]
@@ -738,7 +735,7 @@ cat users.json | jq '.[] | select(.active == true)'  # Filter
 echo '[{"id":1},{"id":2}]' | jq '.[].id'            # Map
 
 # Real-world example
-cat /local/api_response.json | \
+cat /local/tmp/api_response.json | \
     jq '.users[] | select(.role == "admin") | .name'
 ```
 
@@ -746,32 +743,32 @@ cat /local/api_response.json | \
 Count lines, words, and bytes.
 
 ```bash
-wc /local/file.txt           # All counts
-wc -l /local/file.txt        # Lines only
-wc -w /local/file.txt        # Words only
-cat /local/file.txt | wc -l  # Via pipeline
+wc /local/tmp/file.txt           # All counts
+wc -l /local/tmp/file.txt        # Lines only
+wc -w /local/tmp/file.txt        # Words only
+cat /local/tmp/file.txt | wc -l  # Via pipeline
 ```
 
 #### head [-n count]
 Output first N lines (default 10).
 
 ```bash
-head /local/file.txt         # First 10 lines
-head -n 5 /local/file.txt    # First 5 lines
-cat /local/file.txt | head -n 20
+head /local/tmp/file.txt         # First 10 lines
+head -n 5 /local/tmp/file.txt    # First 5 lines
+cat /local/tmp/file.txt | head -n 20
 ```
 
 #### tail [-n count] [-f] [-F] [file...]
 Output last N lines (default 10). With `-f`, continuously follow the file and output new lines as they are appended. **Only works with AGFS files.**
 
 ```bash
-tail /local/file.txt         # Last 10 lines
-tail -n 5 /local/file.txt    # Last 5 lines
-tail -f /local/app.log       # Follow mode: show last 10 lines, then continuously follow
-tail -n 20 -f /local/app.log # Show last 20 lines, then follow
-tail -F /streamfs/live.log   # Stream mode: continuously read from stream
+tail /local/tmp/file.txt         # Last 10 lines
+tail -n 5 /local/tmp/file.txt    # Last 5 lines
+tail -f /local/tmp/app.log       # Follow mode: show last 10 lines, then continuously follow
+tail -n 20 -f /local/tmp/app.log # Show last 20 lines, then follow
+tail -F /streamfs/live.log       # Stream mode: continuously read from stream
 tail -F /streamrotate/metrics.log | grep ERROR  # Filter stream data
-cat /local/file.txt | tail -n 20  # Via pipeline
+cat /local/tmp/file.txt | tail -n 20  # Via pipeline
 ```
 
 **Follow Mode (`-f`):**
@@ -796,16 +793,16 @@ cat /local/file.txt | tail -n 20  # Via pipeline
 Sort lines alphabetically.
 
 ```bash
-sort /local/file.txt         # Ascending
-sort -r /local/file.txt      # Descending
-cat /local/data.txt | sort | uniq
+sort /local/tmp/file.txt         # Ascending
+sort -r /local/tmp/file.txt      # Descending
+cat /local/tmp/data.txt | sort | uniq
 ```
 
 #### uniq
 Remove duplicate adjacent lines.
 
 ```bash
-cat /local/file.txt | sort | uniq
+cat /local/tmp/file.txt | sort | uniq
 ```
 
 #### tr set1 set2
@@ -822,7 +819,7 @@ Reverse each line character by character.
 
 ```bash
 echo "hello" | rev                   # olleh
-cat /local/file.txt | rev
+cat /local/tmp/file.txt | rev
 ```
 
 #### cut [OPTIONS]
@@ -837,7 +834,7 @@ echo "Hello World" | cut -c 1-5              # Hello
 echo "2024-01-15" | cut -c 6-                # 01-15
 
 # Process file
-cat /local/data.csv | cut -f 2,4 -d ',' | sort
+cat /local/tmp/data.csv | cut -f 2,4 -d ',' | sort
 ```
 
 #### tee [-a] [file...]
@@ -848,13 +845,13 @@ Read from stdin and write to both stdout and files. **Only works with AGFS files
 echo "Hello" | tee /local/tmp/output.txt
 
 # Multiple files
-cat /local/app.log | grep ERROR | tee /local/tmp/errors.txt /s3fs/logs/errors.log
+cat /local/tmp/app.log | grep ERROR | tee /local/tmp/errors.txt /s3fs/aws/logs/errors.log
 
 # Append mode
 echo "New line" | tee -a /local/tmp/log.txt
 
 # Real-world pipeline example
-tail -f /local/tmp/app.log | grep ERROR | tee /s3fs/log/errors.log
+tail -f /local/tmp/app.log | grep ERROR | tee /s3fs/aws/log/errors.log
 
 # With tail -F for streams
 tail -F /streamfs/events.log | grep CRITICAL | tee /local/tmp/critical.log
@@ -884,7 +881,7 @@ basename /local/path/to/file.txt             # file.txt
 basename /local/path/to/file.txt .txt        # file
 
 # In scripts
-for file in /local/*.csv; do
+for file in /local/tmp/*.csv; do
     filename=$(basename $file .csv)
     echo "Processing: $filename"
 done
@@ -894,12 +891,12 @@ done
 Extract directory from path.
 
 ```bash
-dirname /local/path/to/file.txt              # /local/path/to
-dirname /local/file.txt                      # /local
-dirname file.txt                             # .
+dirname /local/tmp/path/to/file.txt              # /local/tmp/path/to
+dirname /local/tmp/file.txt                      # /local/tmp
+dirname file.txt                                 # .
 
 # In scripts
-filepath=/local/data/file.txt
+filepath=/local/tmp/data/file.txt
 dirpath=$(dirname $filepath)
 echo "Directory: $dirpath"
 ```
@@ -946,13 +943,13 @@ Evaluate conditional expressions.
 
 **File Tests:**
 ```bash
-[ -f /local/file.txt ]       # File exists and is regular file
-[ -d /local/mydir ]          # Directory exists
-[ -e /local/path ]           # Path exists
+[ -f /local/tmp/file.txt ]       # File exists and is regular file
+[ -d /local/tmp/mydir ]          # Directory exists
+[ -e /local/tmp/path ]           # Path exists
 
 # Example
-if [ -f /local/config.json ]; then
-    cat /local/config.json
+if [ -f /local/tmp/config.json ]; then
+    cat /local/tmp/config.json
 fi
 ```
 
@@ -991,8 +988,8 @@ fi
 [ -f file1.txt -o -f file2.txt ]    # OR
 
 # Example
-if [ -f /local/input.txt -a -w /local/output.txt ]; then
-    cat /local/input.txt > /local/output.txt
+if [ -f /local/tmp/input.txt -a -f /local/tmp/output.txt ]; then
+    cat /local/tmp/input.txt > /local/tmp/output.txt
 fi
 ```
 
@@ -1033,7 +1030,7 @@ exit 1          # Exit with status 1
 exit $?         # Exit with last command's exit code
 
 # In script
-if [ ! -f /local/required.txt ]; then
+if [ ! -f /local/tmp/required.txt ]; then
     echo "Error: Required file not found"
     exit 1
 fi
@@ -1075,21 +1072,18 @@ fi
 ### AGFS Management
 
 #### plugins
-List all mounted AGFS plugins.
+Manage AGFS plugins.
 
 ```bash
-plugins
+plugins list
 
 # Output:
-# Plugin: localfs
-#   Mount Point: /local
-#   Type: localfs
-#   Description: Local file system plugin
+# Builtin Plugins: (15)
+#   localfs              -> /local/tmp
+#   s3fs                 -> /etc, /s3fs/aws
+#   ...
 #
-# Plugin: s3fs
-#   Mount Point: /s3fs
-#   Type: s3fs
-#   Description: S3 file system plugin
+# No external plugins loaded
 ```
 
 #### mount [PLUGIN] [PATH] [OPTIONS]
@@ -1142,7 +1136,7 @@ TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
 echo "Backup: backup_$TIMESTAMP.tar"
 
 LOG_DATE=$(date "+%Y-%m-%d")
-echo "[$LOG_DATE] Process started" >> /local/log.txt
+echo "[$LOG_DATE] Process started" >> /local/tmp/log.txt
 ```
 
 #### help
@@ -1215,12 +1209,12 @@ cat > example.as << 'EOF'
 # Example script demonstrating AGFS shell features
 
 # Variables
-SOURCE_DIR=/local/data
-BACKUP_DIR=/local/backup
+SOURCE_DIR=/local/tmp/data
+BACKUP_DIR=/local/tmp/backup
 TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
 
 # Create backup directory
-mkdir /local/backup
+mkdir $BACKUP_DIR
 
 # Process files
 count=0
@@ -1280,14 +1274,14 @@ cat > backup_system.as << 'EOF'
 # Advanced backup script with error handling
 
 # Configuration
-BACKUP_ROOT=/local/backups
-SOURCE_DIRS="/local/data /local/config /local/logs"
+BACKUP_ROOT=/local/tmp/backups
+SOURCE_DIRS="/local/tmp/data /local/tmp/config /local/tmp/logs"
 DATE=$(date "+%Y-%m-%d")
 BACKUP_DIR=$BACKUP_ROOT/$DATE
 ERROR_LOG=$BACKUP_DIR/errors.log
 
 # Create backup directory
-mkdir /local/backups
+mkdir $BACKUP_ROOT
 mkdir $BACKUP_DIR
 
 # Initialize error log
@@ -1366,7 +1360,7 @@ agfs:/> # Commands now saved to /tmp/my_history.txt
 ```bash
 agfs:/> ec<Tab>              # Completes to "echo"
 agfs:/> cat /lo<Tab>         # Completes to "/local/"
-agfs:/> ls /local/te<Tab>    # Completes to "/local/test.txt"
+agfs:/> ls /local/tmp/te<Tab>    # Completes to "/local/tmp/test.txt"
 ```
 
 ### Multiline Editing
@@ -1381,8 +1375,8 @@ agfs:/> echo "This is a \
 > message"
 This is a very long message
 
-agfs:/> if [ -f /local/file.txt ]; then
->   cat /local/file.txt
+agfs:/> if [ -f /local/tmp/file.txt ]; then
+>   cat /local/tmp/file.txt
 > fi
 ```
 
@@ -1406,19 +1400,19 @@ agfs:/> if [ -f /local/file.txt ]; then
 
 # Analyze application logs across multiple servers
 
-LOG_DIR=/local/logs
-OUTPUT_DIR=/local/analysis
+LOG_DIR=/local/tmp/logs
+OUTPUT_DIR=/local/tmp/analysis
 
 # Create directories
-mkdir /local/logs
-mkdir /local/analysis
+mkdir /local/tmp/logs
+mkdir /local/tmp/analysis
 
 # Create sample log files for demonstration
 for server in web1 web2 web3; do
     echo "Creating sample log for $server..."
-    echo "INFO: Server $server started" > /local/logs/$server.log
-    echo "ERROR: Connection failed" >> /local/logs/$server.log
-    echo "CRITICAL: System failure" >> /local/logs/$server.log
+    echo "INFO: Server $server started" > $LOG_DIR/$server.log
+    echo "ERROR: Connection failed" >> $LOG_DIR/$server.log
+    echo "CRITICAL: System failure" >> $LOG_DIR/$server.log
 done
 
 # Find all errors
@@ -1435,12 +1429,11 @@ done
 cat $OUTPUT_DIR/all_errors.txt | \
     cut -c 21- | \
     sort | \
-    uniq -c | \
-    sort -rn > $OUTPUT_DIR/unique_errors.txt
+    uniq > $OUTPUT_DIR/unique_errors.txt
 
 # Find critical errors
 cat $LOG_DIR/*.log | \
-    grep -iE "(critical|fatal)" > $OUTPUT_DIR/critical.txt
+    grep -i critical > $OUTPUT_DIR/critical.txt
 
 # Generate report
 cat << EOF > $OUTPUT_DIR/report.txt
@@ -1450,8 +1443,8 @@ Generated: $(date)
 
 $(cat $OUTPUT_DIR/summary.txt)
 
-Top 10 Unique Errors:
-$(head -n 10 $OUTPUT_DIR/unique_errors.txt)
+Unique Errors:
+$(cat $OUTPUT_DIR/unique_errors.txt)
 
 Critical Errors: $(cat $OUTPUT_DIR/critical.txt | wc -l)
 EOF
@@ -1466,20 +1459,21 @@ cat $OUTPUT_DIR/report.txt
 
 # Process CSV data and generate JSON reports
 
-INPUT_DIR=/local/data
-OUTPUT_DIR=/local/reports
+INPUT_DIR=/local/tmp/data
+OUTPUT_DIR=/local/tmp/reports
+TEMP_DIR=/local/tmp/temp
 TIMESTAMP=$(date "+%Y%m%d_%H%M%S")
 
 # Create directories
-mkdir /local/data
-mkdir /local/reports
-mkdir /local/temp
+mkdir $INPUT_DIR
+mkdir $OUTPUT_DIR
+mkdir $TEMP_DIR
 
 # Create sample CSV files
-echo "name,value,category,score" > /local/data/data1.csv
-echo "Alice,100,A,95" >> /local/data/data1.csv
-echo "Bob,200,B,85" >> /local/data/data1.csv
-echo "Charlie,150,A,90" >> /local/data/data1.csv
+echo "name,value,category,score" > $INPUT_DIR/data1.csv
+echo "Alice,100,A,95" >> $INPUT_DIR/data1.csv
+echo "Bob,200,B,85" >> $INPUT_DIR/data1.csv
+echo "Charlie,150,A,90" >> $INPUT_DIR/data1.csv
 
 # Process each CSV file
 for csv_file in $INPUT_DIR/*.csv; do
@@ -1489,10 +1483,10 @@ for csv_file in $INPUT_DIR/*.csv; do
     # Extract specific columns (name and score - columns 1 and 4)
     cat $csv_file | \
         tail -n +2 | \
-        cut -f 1,4 -d ',' > /local/temp/extracted_${filename}.txt
+        cut -f 1,4 -d ',' > $TEMP_DIR/extracted_${filename}.txt
 
     # Count lines
-    line_count=$(cat /local/temp/extracted_${filename}.txt | wc -l)
+    line_count=$(cat $TEMP_DIR/extracted_${filename}.txt | wc -l)
     echo "  Processed $line_count records from $filename"
 done
 
@@ -1515,13 +1509,13 @@ echo "Processing complete. Reports in $OUTPUT_DIR"
 
 # Comprehensive backup with verification
 
-SOURCE=/local/important
+SOURCE=/local/tmp/important
 BACKUP_NAME=backup_$(date "+%Y%m%d")
-BACKUP=/local/backups/$BACKUP_NAME
+BACKUP=/local/tmp/backups/$BACKUP_NAME
 MANIFEST=$BACKUP/manifest.txt
 
 # Create backup directories
-mkdir /local/backups
+mkdir /local/tmp/backups
 mkdir $BACKUP
 
 # Copy files
@@ -1592,8 +1586,8 @@ if [ $# -lt 1 ]; then
 fi
 
 ENV=$1
-CONFIG_DIR=/local/config
-DEPLOY_DIR=/local/deployed
+CONFIG_DIR=/local/tmp/config
+DEPLOY_DIR=/local/tmp/deployed
 
 # Validate environment
 if [ "$ENV" != "dev" -a "$ENV" != "staging" -a "$ENV" != "production" ]; then
@@ -1629,16 +1623,17 @@ Configuration:
 $(cat $CONFIG_FILE)
 
 Mounted Filesystems:
-$(plugins | grep "Mount Point")
+$(plugins list | grep "->")
 
 Status: SUCCESS
 EOF
 
 # Deploy to all relevant filesystems
-for mount in /local /s3fs /sqlfs; do
+for mount in /local/tmp /s3fs; do
     if [ -d $mount ]; then
         echo "Deploying to $mount..."
-        cp $CONFIG_FILE $mount/config/current.env 2>/dev/null
+        mkdir $mount/config
+        cp $CONFIG_FILE $mount/config/current.env
 
         if [ $? -eq 0 ]; then
             echo "  [OK] Deployed to $mount"
@@ -1749,8 +1744,8 @@ agfs:/> echo $count
 agfs:/> for i in 1 2 3; do echo $i; done
 
 # Test file operations
-agfs:/> echo "test" > /local/test.txt
-agfs:/> cat /local/test.txt
+agfs:/> echo "test" > /local/tmp/test.txt
+agfs:/> cat /local/tmp/test.txt
 
 # Test functions
 agfs:/> add() { echo $(($1 + $2)); }
