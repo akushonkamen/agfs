@@ -66,7 +66,7 @@ func (fs *HelloFS) Read(path string, offset int64, size int64) ([]byte, error) {
 		data := []byte("Hello, World!\n")
 		return plugin.ApplyRangeRead(data, offset, size)
 	}
-	return nil, errors.New("file not found")
+	return nil, filesystem.ErrNotFound
 }
 
 func (fs *HelloFS) Stat(path string) (*filesystem.FileInfo, error) {
@@ -90,7 +90,7 @@ func (fs *HelloFS) Stat(path string) (*filesystem.FileInfo, error) {
 			Meta:    filesystem.MetaData{Name: PluginName, Type: "directory"},
 		}, nil
 	}
-	return nil, errors.New("file not found")
+	return nil, filesystem.ErrNotFound
 }
 
 func (fs *HelloFS) ReadDir(path string) ([]filesystem.FileInfo, error) {

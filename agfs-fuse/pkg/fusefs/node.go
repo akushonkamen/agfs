@@ -295,6 +295,10 @@ func fillAttr(out *fuse.Attr, info *agfs.FileInfo) {
 	out.Ctime = out.Mtime
 	out.Ctimensec = out.Mtimensec
 
+	// Set owner to current user so they have proper read/write permissions
+	out.Uid = uint32(syscall.Getuid())
+	out.Gid = uint32(syscall.Getgid())
+
 	if info.IsDir {
 		out.Mode |= syscall.S_IFDIR
 	} else {
