@@ -32,6 +32,19 @@ type Session struct {
 	mu         sync.Mutex
 }
 
+// Touch updates the last access time. Must be called with mu held.
+func (s *Session) Touch() {
+	s.lastAccess = time.Now()
+}
+
+// UnlockWithTouch updates lastAccess and releases the lock.
+// This ensures that long-running operations don't cause the session
+// to be incorrectly marked as expired by the cleanup goroutine.
+func (s *Session) UnlockWithTouch() {
+	s.lastAccess = time.Now()
+	s.mu.Unlock()
+}
+
 // SessionManager manages all active sessions
 type SessionManager struct {
 	sessions map[string]*Session // key: "dbName/tableName/sid"
@@ -151,7 +164,7 @@ func (sm *SessionManager) CloseSession(dbName, tableName, sid string) error {
 	}
 
 	session.mu.Lock()
-	defer session.mu.Unlock()
+	defer session.UnlockWithTouch()
 
 	if session.tx != nil {
 		session.tx.Rollback()
@@ -815,7 +828,7 @@ func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesyst
 		}
 
 		session.mu.Lock()
-		defer session.mu.Unlock()
+		defer session.UnlockWithTouch()
 
 		switch operation {
 		case "ctl":
@@ -955,7 +968,7 @@ func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesyst
 		}
 
 		session.mu.Lock()
-		defer session.mu.Unlock()
+		defer session.UnlockWithTouch()
 
 		switch operation {
 		case "ctl":
@@ -1094,7 +1107,7 @@ func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesyst
 	}
 
 	session.mu.Lock()
-	defer session.mu.Unlock()
+	defer session.UnlockWithTouch()
 
 	switch operation {
 	case "ctl":
