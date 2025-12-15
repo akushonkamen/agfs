@@ -20,12 +20,171 @@ const (
 	PluginName = "sqlfs2"
 )
 
+// Session represents a Plan 9 style session for SQL operations
+type Session struct {
+	id         int64            // Numeric session ID
+	dbName     string
+	tableName  string
+	tx         *sql.Tx          // SQL transaction
+	result     []byte           // Query result (JSON)
+	lastError  string           // Error message
+	lastAccess time.Time        // Last access time
+	mu         sync.Mutex
+}
+
+// SessionManager manages all active sessions
+type SessionManager struct {
+	sessions map[string]*Session // key: "dbName/tableName/sid"
+	nextID   int64
+	timeout  time.Duration // Configurable timeout (0 = no timeout)
+	mu       sync.RWMutex
+	stopCh   chan struct{}
+}
+
+// NewSessionManager creates a new session manager
+func NewSessionManager(timeout time.Duration) *SessionManager {
+	sm := &SessionManager{
+		sessions: make(map[string]*Session),
+		nextID:   1,
+		timeout:  timeout,
+		stopCh:   make(chan struct{}),
+	}
+	if timeout > 0 {
+		go sm.cleanupLoop()
+	}
+	return sm
+}
+
+// cleanupLoop periodically cleans up expired sessions
+func (sm *SessionManager) cleanupLoop() {
+	ticker := time.NewTicker(sm.timeout / 2)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			sm.cleanupExpired()
+		case <-sm.stopCh:
+			return
+		}
+	}
+}
+
+// cleanupExpired removes expired sessions
+func (sm *SessionManager) cleanupExpired() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	now := time.Now()
+	for key, session := range sm.sessions {
+		session.mu.Lock()
+		if now.Sub(session.lastAccess) > sm.timeout {
+			if session.tx != nil {
+				session.tx.Rollback()
+			}
+			delete(sm.sessions, key)
+			log.Debugf("[sqlfs2] Session %d expired and cleaned up", session.id)
+		}
+		session.mu.Unlock()
+	}
+}
+
+// Stop stops the cleanup goroutine
+func (sm *SessionManager) Stop() {
+	if sm.timeout > 0 {
+		close(sm.stopCh)
+	}
+}
+
+// CreateSession creates a new session for the given db/table
+func (sm *SessionManager) CreateSession(db *sql.DB, dbName, tableName string) (*Session, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Start a new transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	id := sm.nextID
+	sm.nextID++
+
+	session := &Session{
+		id:         id,
+		dbName:     dbName,
+		tableName:  tableName,
+		tx:         tx,
+		lastAccess: time.Now(),
+	}
+
+	key := fmt.Sprintf("%s/%s/%d", dbName, tableName, id)
+	sm.sessions[key] = session
+
+	log.Debugf("[sqlfs2] Created session %d for %s.%s", id, dbName, tableName)
+	return session, nil
+}
+
+// GetSession retrieves a session by db/table/id
+func (sm *SessionManager) GetSession(dbName, tableName, sid string) *Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	key := fmt.Sprintf("%s/%s/%s", dbName, tableName, sid)
+	session := sm.sessions[key]
+	if session != nil {
+		session.mu.Lock()
+		session.lastAccess = time.Now()
+		session.mu.Unlock()
+	}
+	return session
+}
+
+// CloseSession closes and removes a session
+func (sm *SessionManager) CloseSession(dbName, tableName, sid string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	key := fmt.Sprintf("%s/%s/%s", dbName, tableName, sid)
+	session, exists := sm.sessions[key]
+	if !exists {
+		return fmt.Errorf("session not found: %s", sid)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.tx != nil {
+		session.tx.Rollback()
+	}
+	delete(sm.sessions, key)
+
+	log.Debugf("[sqlfs2] Closed session %d", session.id)
+	return nil
+}
+
+// ListSessions returns all session IDs for a given db/table
+func (sm *SessionManager) ListSessions(dbName, tableName string) []string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	prefix := fmt.Sprintf("%s/%s/", dbName, tableName)
+	var sids []string
+	for key := range sm.sessions {
+		if strings.HasPrefix(key, prefix) {
+			sid := strings.TrimPrefix(key, prefix)
+			sids = append(sids, sid)
+		}
+	}
+	return sids
+}
+
 // SQLFS2Plugin provides a SQL interface through file system operations
-// Directory structure: /sqlfs2/<dbName>/<tableName>/{schema, execute, query}
+// Directory structure: /sqlfs2/<dbName>/<tableName>/{ctl, schema, count, <sid>/...}
 type SQLFS2Plugin struct {
-	db      *sql.DB
-	backend Backend
-	config  map[string]interface{}
+	db             *sql.DB
+	backend        Backend
+	config         map[string]interface{}
+	sessionManager *SessionManager // Shared across all filesystem instances
 }
 
 // NewSQLFS2Plugin creates a new SQLFS2 plugin
@@ -39,7 +198,7 @@ func (p *SQLFS2Plugin) Name() string {
 
 func (p *SQLFS2Plugin) Validate(cfg map[string]interface{}) error {
 	allowedKeys := []string{"backend", "db_path", "dsn", "user", "password", "host", "port", "database",
-		"enable_tls", "tls_server_name", "tls_skip_verify", "mount_path"}
+		"enable_tls", "tls_server_name", "tls_skip_verify", "mount_path", "session_timeout"}
 	if err := config.ValidateOnlyKnownKeys(cfg, allowedKeys); err != nil {
 		return err
 	}
@@ -99,15 +258,25 @@ func (p *SQLFS2Plugin) Initialize(cfg map[string]interface{}) error {
 	}
 	p.db = db
 
+	// Initialize session manager (shared across all filesystem instances)
+	var timeout time.Duration
+	if timeoutStr := config.GetStringConfig(cfg, "session_timeout", ""); timeoutStr != "" {
+		if parsed, err := time.ParseDuration(timeoutStr); err == nil {
+			timeout = parsed
+		}
+	}
+	p.sessionManager = NewSessionManager(timeout)
+
 	log.Infof("[sqlfs2] Initialized with backend: %s", backendType)
 	return nil
 }
 
 func (p *SQLFS2Plugin) GetFileSystem() filesystem.FileSystem {
 	return &sqlfs2FS{
-		plugin:       p,
-		handles:      make(map[int64]*SQLFileHandle),
-		nextHandleID: 1,
+		plugin:         p,
+		handles:        make(map[int64]*SQLFileHandle),
+		nextHandleID:   1,
+		sessionManager: p.sessionManager, // Use shared session manager
 	}
 }
 
@@ -194,10 +363,20 @@ func (p *SQLFS2Plugin) GetConfigParams() []plugin.ConfigParameter {
 			Default:     "false",
 			Description: "Skip TLS certificate verification",
 		},
+		{
+			Name:        "session_timeout",
+			Type:        "string",
+			Required:    false,
+			Default:     "",
+			Description: "Session timeout duration (e.g., '10m', '1h'). Empty means no timeout.",
+		},
 	}
 }
 
 func (p *SQLFS2Plugin) Shutdown() error {
+	if p.sessionManager != nil {
+		p.sessionManager.Stop()
+	}
 	if p.db != nil {
 		return p.db.Close()
 	}
@@ -206,38 +385,117 @@ func (p *SQLFS2Plugin) Shutdown() error {
 
 // sqlfs2FS implements the FileSystem interface for SQL operations
 type sqlfs2FS struct {
-	plugin       *SQLFS2Plugin
-	handles      map[int64]*SQLFileHandle
-	handlesMu    sync.RWMutex
-	nextHandleID int64
+	plugin         *SQLFS2Plugin
+	handles        map[int64]*SQLFileHandle
+	handlesMu      sync.RWMutex
+	nextHandleID   int64
+	sessionManager *SessionManager
 }
 
-// parsePath parses a path like /dbName/tableName/operation into components
-func (fs *sqlfs2FS) parsePath(path string) (dbName, tableName, operation string, err error) {
+// isSessionID checks if the given string is a numeric session ID
+func isSessionID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isTableLevelFile checks if the given name is a table-level special file
+func isTableLevelFile(name string) bool {
+	return name == "ctl" || name == "schema" || name == "count"
+}
+
+// isRootLevelFile checks if the given name is a root-level special file
+func isRootLevelFile(name string) bool {
+	return name == "ctl"
+}
+
+// isSessionFile checks if the given name is a session-level file
+func isSessionFile(name string) bool {
+	return name == "ctl" || name == "query" || name == "result" || name == "data" || name == "error"
+}
+
+// parsePath parses a path into (dbName, tableName, sid, operation)
+// Supported paths:
+//   /                              -> ("", "", "", "")
+//   /ctl                           -> ("", "", "", "ctl") - root level ctl
+//   /<sid>                         -> ("", "", sid, "")   - root level session
+//   /<sid>/query                   -> ("", "", sid, "query")
+//   /dbName                        -> (dbName, "", "", "")
+//   /dbName/tableName              -> (dbName, tableName, "", "")
+//   /dbName/tableName/ctl          -> (dbName, tableName, "", "ctl")
+//   /dbName/tableName/schema       -> (dbName, tableName, "", "schema")
+//   /dbName/tableName/count        -> (dbName, tableName, "", "count")
+//   /dbName/tableName/<sid>        -> (dbName, tableName, sid, "")
+//   /dbName/tableName/<sid>/query  -> (dbName, tableName, sid, "query")
+//   /dbName/tableName/<sid>/result -> (dbName, tableName, sid, "result")
+//   /dbName/tableName/<sid>/ctl    -> (dbName, tableName, sid, "ctl")
+//   /dbName/tableName/<sid>/data   -> (dbName, tableName, sid, "data")
+//   /dbName/tableName/<sid>/error  -> (dbName, tableName, sid, "error")
+func (fs *sqlfs2FS) parsePath(path string) (dbName, tableName, sid, operation string, err error) {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.Split(path, "/")
 
 	if len(parts) == 0 || path == "" {
 		// Root directory
-		return "", "", "", nil
+		return "", "", "", "", nil
 	}
 
 	if len(parts) == 1 {
+		// Could be:
+		// - /ctl -> root level ctl file
+		// - /<sid> -> root level session directory
+		// - /dbName -> database directory
+		if isRootLevelFile(parts[0]) {
+			return "", "", "", parts[0], nil
+		}
+		if isSessionID(parts[0]) {
+			return "", "", parts[0], "", nil
+		}
 		// Database level: /dbName
-		return parts[0], "", "", nil
+		return parts[0], "", "", "", nil
 	}
 
 	if len(parts) == 2 {
+		// Could be:
+		// - /<sid>/query -> root level session file
+		// - /dbName/tableName -> table directory
+		if isSessionID(parts[0]) && isSessionFile(parts[1]) {
+			return "", "", parts[0], parts[1], nil
+		}
 		// Table level: /dbName/tableName
-		return parts[0], parts[1], "", nil
+		return parts[0], parts[1], "", "", nil
 	}
 
 	if len(parts) == 3 {
-		// Operation level: /dbName/tableName/operation
-		return parts[0], parts[1], parts[2], nil
+		// Either table-level file or session directory
+		// /dbName/tableName/ctl -> table-level ctl
+		// /dbName/tableName/schema -> table-level schema
+		// /dbName/tableName/count -> table-level count
+		// /dbName/tableName/<sid> -> session directory
+		if isTableLevelFile(parts[2]) {
+			return parts[0], parts[1], "", parts[2], nil
+		}
+		if isSessionID(parts[2]) {
+			return parts[0], parts[1], parts[2], "", nil
+		}
+		return "", "", "", "", fmt.Errorf("invalid path component: %s", parts[2])
 	}
 
-	return "", "", "", fmt.Errorf("invalid path: %s", path)
+	if len(parts) == 4 {
+		// Session-level file: /dbName/tableName/<sid>/operation
+		if !isSessionID(parts[2]) {
+			return "", "", "", "", fmt.Errorf("invalid session ID: %s", parts[2])
+		}
+		return parts[0], parts[1], parts[2], parts[3], nil
+	}
+
+	return "", "", "", "", fmt.Errorf("invalid path: %s", path)
 }
 
 // tableExists checks if a table exists in the specified database
@@ -261,107 +519,491 @@ func (fs *sqlfs2FS) tableExists(dbName, tableName string) (bool, error) {
 }
 
 func (fs *sqlfs2FS) Read(path string, offset int64, size int64) ([]byte, error) {
-	dbName, tableName, operation, err := fs.parsePath(path)
+	dbName, tableName, sid, operation, err := fs.parsePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Only support reading schema file
-	if operation == "schema" {
-		if dbName == "" || tableName == "" {
-			return nil, fmt.Errorf("invalid path for schema: %s", path)
-		}
+	// Root-level files (no db, no table, no session)
+	if dbName == "" && tableName == "" && sid == "" {
+		switch operation {
+		case "ctl":
+			// Root-level ctl: creates a global session (no table binding)
+			session, err := fs.sessionManager.CreateSession(fs.plugin.db, "", "")
+			if err != nil {
+				return nil, err
+			}
+			data := []byte(fmt.Sprintf("%d\n", session.id))
+			return plugin.ApplyRangeRead(data, offset, size)
 
-		// Get table schema using backend
-		createTableStmt, err := fs.plugin.backend.GetTableSchema(fs.plugin.db, dbName, tableName)
-		if err != nil {
-			return nil, err
-		}
+		case "":
+			// Root directory
+			return nil, filesystem.NewInvalidArgumentError("path", path, "is a directory")
 
-		data := []byte(createTableStmt + "\n")
-		return plugin.ApplyRangeRead(data, offset, size)
+		default:
+			return nil, fmt.Errorf("unknown root-level file: %s", operation)
+		}
 	}
 
-	// Support reading count file
-	if operation == "count" {
-		if dbName == "" || tableName == "" {
-			return nil, fmt.Errorf("invalid path for count: %s", path)
+	// Root-level session files (no db, no table, but has session)
+	if dbName == "" && tableName == "" && sid != "" {
+		session := fs.sessionManager.GetSession("", "", sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
 		}
 
-		// Switch to database if needed
-		if err := fs.plugin.backend.SwitchDatabase(fs.plugin.db, dbName); err != nil {
-			return nil, err
-		}
+		switch operation {
+		case "result":
+			session.mu.Lock()
+			result := session.result
+			session.mu.Unlock()
 
-		// Execute count query
-		sqlStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", dbName, tableName)
-		var count int64
-		err := fs.plugin.db.QueryRow(sqlStmt).Scan(&count)
-		if err != nil {
-			return nil, fmt.Errorf("count query error: %w", err)
-		}
+			if result == nil {
+				return []byte{}, nil
+			}
+			return plugin.ApplyRangeRead(result, offset, size)
 
-		data := []byte(fmt.Sprintf("%d\n", count))
-		return plugin.ApplyRangeRead(data, offset, size)
+		case "error":
+			session.mu.Lock()
+			errMsg := session.lastError
+			session.mu.Unlock()
+
+			if errMsg == "" {
+				return []byte{}, nil
+			}
+			data := []byte(errMsg + "\n")
+			return plugin.ApplyRangeRead(data, offset, size)
+
+		case "query", "data", "ctl":
+			return nil, fmt.Errorf("%s is write-only", operation)
+
+		case "":
+			// Session directory
+			return nil, filesystem.NewInvalidArgumentError("path", path, "is a directory")
+
+		default:
+			return nil, fmt.Errorf("unknown session file: %s", operation)
+		}
 	}
 
-	if operation == "query" || operation == "execute" || operation == "insert_json" {
+	// Table-level files (no session)
+	if sid == "" {
+		switch operation {
+		case "ctl":
+			// Reading ctl creates a new session and returns the session ID
+			if dbName == "" || tableName == "" {
+				return nil, fmt.Errorf("invalid path for ctl: %s", path)
+			}
+
+			// Check if table exists
+			exists, err := fs.tableExists(dbName, tableName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check table existence: %w", err)
+			}
+			if !exists {
+				return nil, fmt.Errorf("table '%s.%s' does not exist", dbName, tableName)
+			}
+
+			// Switch to database if needed
+			if err := fs.plugin.backend.SwitchDatabase(fs.plugin.db, dbName); err != nil {
+				return nil, err
+			}
+
+			// Create new session
+			session, err := fs.sessionManager.CreateSession(fs.plugin.db, dbName, tableName)
+			if err != nil {
+				return nil, err
+			}
+
+			data := []byte(fmt.Sprintf("%d\n", session.id))
+			return plugin.ApplyRangeRead(data, offset, size)
+
+		case "schema":
+			if dbName == "" || tableName == "" {
+				return nil, fmt.Errorf("invalid path for schema: %s", path)
+			}
+
+			createTableStmt, err := fs.plugin.backend.GetTableSchema(fs.plugin.db, dbName, tableName)
+			if err != nil {
+				return nil, err
+			}
+
+			data := []byte(createTableStmt + "\n")
+			return plugin.ApplyRangeRead(data, offset, size)
+
+		case "count":
+			if dbName == "" || tableName == "" {
+				return nil, fmt.Errorf("invalid path for count: %s", path)
+			}
+
+			if err := fs.plugin.backend.SwitchDatabase(fs.plugin.db, dbName); err != nil {
+				return nil, err
+			}
+
+			sqlStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", dbName, tableName)
+			var count int64
+			err := fs.plugin.db.QueryRow(sqlStmt).Scan(&count)
+			if err != nil {
+				return nil, fmt.Errorf("count query error: %w", err)
+			}
+
+			data := []byte(fmt.Sprintf("%d\n", count))
+			return plugin.ApplyRangeRead(data, offset, size)
+
+		case "":
+			// Directory read
+			return nil, filesystem.NewInvalidArgumentError("path", path, "is a directory")
+
+		default:
+			return nil, fmt.Errorf("unknown table-level file: %s", operation)
+		}
+	}
+
+	// Session-level files
+	session := fs.sessionManager.GetSession(dbName, tableName, sid)
+	if session == nil {
+		return nil, fmt.Errorf("session not found: %s", sid)
+	}
+
+	switch operation {
+	case "result":
+		session.mu.Lock()
+		result := session.result
+		session.mu.Unlock()
+
+		if result == nil {
+			return []byte{}, nil
+		}
+		return plugin.ApplyRangeRead(result, offset, size)
+
+	case "error":
+		session.mu.Lock()
+		errMsg := session.lastError
+		session.mu.Unlock()
+
+		if errMsg == "" {
+			return []byte{}, nil
+		}
+		data := []byte(errMsg + "\n")
+		return plugin.ApplyRangeRead(data, offset, size)
+
+	case "query", "data", "ctl":
 		return nil, fmt.Errorf("%s is write-only", operation)
-	}
 
-	// Directory read - return error indicating this is a directory
-	return nil, filesystem.NewInvalidArgumentError("path", path, "is a directory")
+	case "":
+		// Session directory
+		return nil, filesystem.NewInvalidArgumentError("path", path, "is a directory")
+
+	default:
+		return nil, fmt.Errorf("unknown session file: %s", operation)
+	}
 }
 
 func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesystem.WriteFlag) (int64, error) {
-	dbName, tableName, operation, err := fs.parsePath(path)
+	dbName, tableName, sid, operation, err := fs.parsePath(path)
 	if err != nil {
 		return 0, err
 	}
 
-	if operation == "" {
-		return 0, fmt.Errorf("cannot write to directory: %s", path)
+	// Root-level files (no db, no table, no session)
+	if dbName == "" && tableName == "" && sid == "" {
+		switch operation {
+		case "":
+			return 0, fmt.Errorf("cannot write to directory: %s", path)
+		case "ctl":
+			return 0, fmt.Errorf("ctl is read-only")
+		default:
+			return 0, fmt.Errorf("unknown root-level file: %s", operation)
+		}
 	}
 
-	if operation == "schema" || operation == "count" {
-		return 0, fmt.Errorf("%s is read-only", operation)
-	}
-
-	// Switch to database if needed
-	if err := fs.plugin.backend.SwitchDatabase(fs.plugin.db, dbName); err != nil {
-		return 0, err
-	}
-
-	// Handle insert_json operation
-	if operation == "insert_json" {
-		if dbName == "" || tableName == "" {
-			return 0, fmt.Errorf("invalid path for insert_json: %s", path)
+	// Root-level session files (no db, no table, but has session)
+	if dbName == "" && tableName == "" && sid != "" {
+		session := fs.sessionManager.GetSession("", "", sid)
+		if session == nil {
+			return 0, fmt.Errorf("session not found: %s", sid)
 		}
 
-		// Get table columns
+		session.mu.Lock()
+		defer session.mu.Unlock()
+
+		switch operation {
+		case "ctl":
+			cmd := strings.TrimSpace(string(data))
+			if cmd == "close" {
+				session.mu.Unlock()
+				err := fs.sessionManager.CloseSession("", "", sid)
+				session.mu.Lock()
+				if err != nil {
+					return 0, err
+				}
+				return int64(len(data)), nil
+			}
+			return 0, fmt.Errorf("unknown ctl command: %s", cmd)
+
+		case "query":
+			// Execute SQL query and store result
+			sqlStmt := strings.TrimSpace(string(data))
+			if sqlStmt == "" {
+				session.lastError = "empty SQL statement"
+				return 0, fmt.Errorf("empty SQL statement")
+			}
+
+			// Determine if this is a SELECT query
+			upperSQL := strings.ToUpper(sqlStmt)
+			isSelect := strings.HasPrefix(upperSQL, "SELECT") ||
+				strings.HasPrefix(upperSQL, "SHOW") ||
+				strings.HasPrefix(upperSQL, "DESCRIBE") ||
+				strings.HasPrefix(upperSQL, "EXPLAIN")
+
+			if isSelect {
+				rows, err := session.tx.Query(sqlStmt)
+				if err != nil {
+					session.lastError = err.Error()
+					session.result = nil
+					return 0, fmt.Errorf("query error: %w", err)
+				}
+				defer rows.Close()
+
+				columns, err := rows.Columns()
+				if err != nil {
+					session.lastError = err.Error()
+					session.result = nil
+					return 0, fmt.Errorf("failed to get columns: %w", err)
+				}
+
+				var results []map[string]interface{}
+				for rows.Next() {
+					values := make([]interface{}, len(columns))
+					valuePtrs := make([]interface{}, len(columns))
+					for i := range values {
+						valuePtrs[i] = &values[i]
+					}
+
+					if err := rows.Scan(valuePtrs...); err != nil {
+						session.lastError = err.Error()
+						session.result = nil
+						return 0, fmt.Errorf("scan error: %w", err)
+					}
+
+					row := make(map[string]interface{})
+					for i, col := range columns {
+						val := values[i]
+						if b, ok := val.([]byte); ok {
+							row[col] = string(b)
+						} else {
+							row[col] = val
+						}
+					}
+					results = append(results, row)
+				}
+
+				if err := rows.Err(); err != nil {
+					session.lastError = err.Error()
+					session.result = nil
+					return 0, fmt.Errorf("rows error: %w", err)
+				}
+
+				jsonData, err := json.MarshalIndent(results, "", "  ")
+				if err != nil {
+					session.lastError = err.Error()
+					session.result = nil
+					return 0, fmt.Errorf("json marshal error: %w", err)
+				}
+				session.result = append(jsonData, '\n')
+				session.lastError = ""
+			} else {
+				result, err := session.tx.Exec(sqlStmt)
+				if err != nil {
+					session.lastError = err.Error()
+					session.result = nil
+					return 0, fmt.Errorf("execution error: %w", err)
+				}
+
+				rowsAffected, _ := result.RowsAffected()
+				lastInsertId, _ := result.LastInsertId()
+
+				resultMap := map[string]interface{}{
+					"rows_affected":  rowsAffected,
+					"last_insert_id": lastInsertId,
+				}
+				jsonData, _ := json.MarshalIndent(resultMap, "", "  ")
+				session.result = append(jsonData, '\n')
+				session.lastError = ""
+			}
+
+			return int64(len(data)), nil
+
+		case "result", "error":
+			return 0, fmt.Errorf("%s is read-only", operation)
+
+		case "":
+			return 0, fmt.Errorf("cannot write to directory: %s", path)
+
+		default:
+			return 0, fmt.Errorf("unknown session file: %s", operation)
+		}
+	}
+
+	// Table-level files (no session)
+	if sid == "" {
+		switch operation {
+		case "":
+			return 0, fmt.Errorf("cannot write to directory: %s", path)
+		case "ctl", "schema", "count":
+			return 0, fmt.Errorf("%s is read-only", operation)
+		default:
+			return 0, fmt.Errorf("unknown table-level file: %s", operation)
+		}
+	}
+
+	// Session-level files
+	session := fs.sessionManager.GetSession(dbName, tableName, sid)
+	if session == nil {
+		return 0, fmt.Errorf("session not found: %s", sid)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	switch operation {
+	case "ctl":
+		// Writing "close" to ctl closes the session
+		cmd := strings.TrimSpace(string(data))
+		if cmd == "close" {
+			session.mu.Unlock() // Unlock before closing
+			err := fs.sessionManager.CloseSession(dbName, tableName, sid)
+			session.mu.Lock() // Re-lock for deferred unlock
+			if err != nil {
+				return 0, err
+			}
+			return int64(len(data)), nil
+		}
+		return 0, fmt.Errorf("unknown ctl command: %s", cmd)
+
+	case "query":
+		// Execute SQL query and store result
+		sqlStmt := strings.TrimSpace(string(data))
+		if sqlStmt == "" {
+			session.lastError = "empty SQL statement"
+			return 0, fmt.Errorf("empty SQL statement")
+		}
+
+		// Determine if this is a SELECT query
+		upperSQL := strings.ToUpper(sqlStmt)
+		isSelect := strings.HasPrefix(upperSQL, "SELECT") ||
+			strings.HasPrefix(upperSQL, "SHOW") ||
+			strings.HasPrefix(upperSQL, "DESCRIBE") ||
+			strings.HasPrefix(upperSQL, "EXPLAIN")
+
+		if isSelect {
+			// Execute SELECT query
+			rows, err := session.tx.Query(sqlStmt)
+			if err != nil {
+				session.lastError = err.Error()
+				session.result = nil
+				return 0, fmt.Errorf("query error: %w", err)
+			}
+			defer rows.Close()
+
+			// Get column names
+			columns, err := rows.Columns()
+			if err != nil {
+				session.lastError = err.Error()
+				session.result = nil
+				return 0, fmt.Errorf("failed to get columns: %w", err)
+			}
+
+			// Read all results
+			var results []map[string]interface{}
+			for rows.Next() {
+				values := make([]interface{}, len(columns))
+				valuePtrs := make([]interface{}, len(columns))
+				for i := range values {
+					valuePtrs[i] = &values[i]
+				}
+
+				if err := rows.Scan(valuePtrs...); err != nil {
+					session.lastError = err.Error()
+					session.result = nil
+					return 0, fmt.Errorf("scan error: %w", err)
+				}
+
+				row := make(map[string]interface{})
+				for i, col := range columns {
+					val := values[i]
+					if b, ok := val.([]byte); ok {
+						row[col] = string(b)
+					} else {
+						row[col] = val
+					}
+				}
+				results = append(results, row)
+			}
+
+			if err := rows.Err(); err != nil {
+				session.lastError = err.Error()
+				session.result = nil
+				return 0, fmt.Errorf("rows error: %w", err)
+			}
+
+			// Store results as JSON
+			jsonData, err := json.MarshalIndent(results, "", "  ")
+			if err != nil {
+				session.lastError = err.Error()
+				session.result = nil
+				return 0, fmt.Errorf("json marshal error: %w", err)
+			}
+			session.result = append(jsonData, '\n')
+			session.lastError = ""
+		} else {
+			// Execute DML statement (INSERT, UPDATE, DELETE, etc.)
+			result, err := session.tx.Exec(sqlStmt)
+			if err != nil {
+				session.lastError = err.Error()
+				session.result = nil
+				return 0, fmt.Errorf("execution error: %w", err)
+			}
+
+			rowsAffected, _ := result.RowsAffected()
+			lastInsertId, _ := result.LastInsertId()
+
+			// Store result as JSON
+			resultMap := map[string]interface{}{
+				"rows_affected":  rowsAffected,
+				"last_insert_id": lastInsertId,
+			}
+			jsonData, _ := json.MarshalIndent(resultMap, "", "  ")
+			session.result = append(jsonData, '\n')
+			session.lastError = ""
+		}
+
+		return int64(len(data)), nil
+
+	case "data":
+		// Insert JSON data
 		columns, err := fs.plugin.backend.GetTableColumns(fs.plugin.db, dbName, tableName)
 		if err != nil {
+			session.lastError = err.Error()
 			return 0, fmt.Errorf("failed to get table columns: %w", err)
 		}
 
 		if len(columns) == 0 {
+			session.lastError = "no columns found for table"
 			return 0, fmt.Errorf("no columns found for table %s", tableName)
 		}
 
-		// Build column names list
 		columnNames := make([]string, len(columns))
 		for i, col := range columns {
 			columnNames[i] = col.Name
 		}
 
-		// Try to detect stream mode (NDJSON - Newline Delimited JSON)
-		// Stream mode: each line is a complete JSON object
+		// Parse JSON (support single object, array, or NDJSON)
+		var records []map[string]interface{}
 		dataStr := string(data)
-
-		// Don't trim the entire string first, split directly
 		lines := strings.Split(dataStr, "\n")
 
-		// Filter out empty lines for counting
+		// Check for NDJSON mode
 		nonEmptyLines := 0
 		firstNonEmptyIdx := -1
 		for i, line := range lines {
@@ -375,73 +1017,58 @@ func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesyst
 
 		isStreamMode := false
 		if nonEmptyLines > 1 && firstNonEmptyIdx >= 0 {
-			// Check if first non-empty line is a valid JSON object (not array)
 			var testObj map[string]interface{}
 			firstLine := strings.TrimSpace(lines[firstNonEmptyIdx])
 			if err := json.Unmarshal([]byte(firstLine), &testObj); err == nil {
-				// Also check it's not a JSON array
 				isStreamMode = true
 			}
 		}
 
-		var records []map[string]interface{}
-		var streamErrors []string
-
 		if isStreamMode {
-			// Stream mode: parse line by line (NDJSON format)
-			for lineNum, line := range lines {
+			for _, line := range lines {
 				line = strings.TrimSpace(line)
 				if line == "" {
 					continue
 				}
-
 				var record map[string]interface{}
 				if err := json.Unmarshal([]byte(line), &record); err != nil {
-					streamErrors = append(streamErrors, fmt.Sprintf("line %d: %v", lineNum+1, err))
 					continue
 				}
 				records = append(records, record)
 			}
 		} else {
-			// Normal mode: parse as single JSON or JSON array
 			var jsonData interface{}
 			if err := json.Unmarshal(data, &jsonData); err != nil {
+				session.lastError = err.Error()
 				return 0, fmt.Errorf("invalid JSON: %w", err)
 			}
 
-			// Handle both single object and array of objects
 			switch v := jsonData.(type) {
 			case map[string]interface{}:
-				// Single JSON object
 				records = append(records, v)
 			case []interface{}:
-				// Array of JSON objects
 				for i, item := range v {
 					if record, ok := item.(map[string]interface{}); ok {
 						records = append(records, record)
 					} else {
+						session.lastError = fmt.Sprintf("element at index %d is not a JSON object", i)
 						return 0, fmt.Errorf("element at index %d is not a JSON object", i)
 					}
 				}
 			default:
+				session.lastError = "JSON must be an object or array of objects"
 				return 0, fmt.Errorf("JSON must be an object or array of objects")
 			}
 		}
 
 		if len(records) == 0 {
-			if len(streamErrors) > 0 {
-				return 0, fmt.Errorf("no valid records found. Errors: %s", strings.Join(streamErrors, "; "))
-			}
+			session.lastError = "no records to insert"
 			return 0, fmt.Errorf("no records to insert")
 		}
 
-		// Execute inserts
+		// Execute inserts in transaction
 		insertedCount := 0
-		failedCount := 0
-		var insertErrors []string
-
 		for idx, record := range records {
-			// Build values list matching column order
 			values := make([]interface{}, len(columnNames))
 			for i, colName := range columnNames {
 				if val, ok := record[colName]; ok {
@@ -451,7 +1078,6 @@ func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesyst
 				}
 			}
 
-			// Build INSERT statement
 			placeholders := make([]string, len(columnNames))
 			for i := range placeholders {
 				placeholders[i] = "?"
@@ -462,60 +1088,33 @@ func (fs *sqlfs2FS) Write(path string, data []byte, offset int64, flags filesyst
 				strings.Join(columnNames, ", "),
 				strings.Join(placeholders, ", "))
 
-			// Execute insert
-			_, err := fs.plugin.db.Exec(insertSQL, values...)
-			if err != nil {
-				failedCount++
-				insertErrors = append(insertErrors, fmt.Sprintf("record %d: %v", idx+1, err))
-				// In stream mode, continue on error; in normal mode, fail fast
-				if !isStreamMode {
-					return 0, fmt.Errorf("insert error at record %d: %w", idx+1, err)
-				}
-				continue
+			if _, err := session.tx.Exec(insertSQL, values...); err != nil {
+				session.lastError = fmt.Sprintf("insert error at record %d: %v", idx+1, err)
+				session.result = nil
+				return 0, fmt.Errorf("insert error at record %d: %w", idx+1, err)
 			}
 			insertedCount++
 		}
 
-		// Note: Response JSON is no longer returned via Write
-		// Clients should use other mechanisms if they need detailed results
-		return int64(len(data)), nil
-	}
-
-	sqlStmt := strings.TrimSpace(string(data))
-	if sqlStmt == "" {
-		return 0, fmt.Errorf("empty SQL statement")
-	}
-
-	if operation == "query" {
-		// Execute SELECT queries
-		rows, err := fs.plugin.db.Query(sqlStmt)
-		if err != nil {
-			return 0, fmt.Errorf("query error: %w", err)
+		// Store result as JSON
+		resultMap := map[string]interface{}{
+			"inserted_count": insertedCount,
 		}
-		defer rows.Close()
-
-		// Just iterate to validate the query executes
-		for rows.Next() {
-			// Skip result processing - clients should use Read for query results
-		}
-
-		if err := rows.Err(); err != nil {
-			return 0, fmt.Errorf("rows iteration error: %w", err)
-		}
+		jsonData, _ := json.MarshalIndent(resultMap, "", "  ")
+		session.result = append(jsonData, '\n')
+		session.lastError = ""
 
 		return int64(len(data)), nil
 
-	} else if operation == "execute" {
-		// Execute DML statements (INSERT, UPDATE, DELETE)
-		_, err := fs.plugin.db.Exec(sqlStmt)
-		if err != nil {
-			return 0, fmt.Errorf("execution error: %w", err)
-		}
+	case "result", "error":
+		return 0, fmt.Errorf("%s is read-only", operation)
 
-		return int64(len(data)), nil
+	case "":
+		return 0, fmt.Errorf("cannot write to directory: %s", path)
+
+	default:
+		return 0, fmt.Errorf("unknown session file: %s", operation)
 	}
-
-	return 0, fmt.Errorf("unknown operation: %s", operation)
 }
 
 func (fs *sqlfs2FS) Create(path string) error {
@@ -531,14 +1130,20 @@ func (fs *sqlfs2FS) Remove(path string) error {
 }
 
 func (fs *sqlfs2FS) RemoveAll(path string) error {
-	dbName, tableName, operation, err := fs.parsePath(path)
+	dbName, tableName, sid, operation, err := fs.parsePath(path)
 	if err != nil {
 		return err
 	}
 
+	// Support removing root-level session
+	// Path should be /<sid>
+	if dbName == "" && tableName == "" && sid != "" && operation == "" {
+		return fs.sessionManager.CloseSession("", "", sid)
+	}
+
 	// Support removing database (DROP DATABASE)
 	// Path should be /dbName
-	if dbName != "" && tableName == "" && operation == "" {
+	if dbName != "" && tableName == "" && sid == "" && operation == "" {
 		// Execute DROP DATABASE
 		sqlStmt := fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName)
 		_, err := fs.plugin.db.Exec(sqlStmt)
@@ -552,7 +1157,7 @@ func (fs *sqlfs2FS) RemoveAll(path string) error {
 
 	// Support removing tables (DROP TABLE)
 	// Path should be /dbName/tableName
-	if dbName != "" && tableName != "" && operation == "" {
+	if dbName != "" && tableName != "" && sid == "" && operation == "" {
 		// Switch to database if needed
 		if err := fs.plugin.backend.SwitchDatabase(fs.plugin.db, dbName); err != nil {
 			return err
@@ -569,27 +1174,56 @@ func (fs *sqlfs2FS) RemoveAll(path string) error {
 		return nil
 	}
 
-	return fmt.Errorf("operation not supported: can only remove databases or tables")
+	// Support removing session directory
+	// Path should be /dbName/tableName/<sid>
+	if dbName != "" && tableName != "" && sid != "" && operation == "" {
+		return fs.sessionManager.CloseSession(dbName, tableName, sid)
+	}
+
+	return fmt.Errorf("operation not supported: can only remove databases, tables, or sessions")
 }
 
 func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
-	dbName, tableName, operation, err := fs.parsePath(path)
+	dbName, tableName, sid, operation, err := fs.parsePath(path)
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
 
-	// Root directory: list databases
-	if dbName == "" {
+	// Root directory: list ctl, databases, and root-level sessions
+	if dbName == "" && tableName == "" && sid == "" && operation == "" {
+		entries := []filesystem.FileInfo{
+			{
+				Name:    "ctl",
+				Size:    0,
+				Mode:    0444, // read-only (reading creates session)
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "ctl"},
+			},
+		}
+
+		// Add root-level sessions
+		sids := fs.sessionManager.ListSessions("", "")
+		for _, s := range sids {
+			entries = append(entries, filesystem.FileInfo{
+				Name:    s,
+				Size:    0,
+				Mode:    0755,
+				ModTime: now,
+				IsDir:   true,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "session"},
+			})
+		}
+
+		// Add databases
 		dbNames, err := fs.plugin.backend.ListDatabases(fs.plugin.db)
 		if err != nil {
 			return nil, err
 		}
-
-		var databases []filesystem.FileInfo
 		for _, name := range dbNames {
-			databases = append(databases, filesystem.FileInfo{
+			entries = append(entries, filesystem.FileInfo{
 				Name:    name,
 				Size:    0,
 				Mode:    0755,
@@ -598,7 +1232,71 @@ func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 				Meta:    filesystem.MetaData{Name: PluginName, Type: "database"},
 			})
 		}
-		return databases, nil
+		return entries, nil
+	}
+
+	// Root-level session directory
+	if dbName == "" && tableName == "" && sid != "" && operation == "" {
+		session := fs.sessionManager.GetSession("", "", sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
+		}
+
+		return []filesystem.FileInfo{
+			{
+				Name:    "ctl",
+				Size:    0,
+				Mode:    0222,
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "session-ctl"},
+			},
+			{
+				Name:    "query",
+				Size:    0,
+				Mode:    0222,
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "query"},
+			},
+			{
+				Name:    "result",
+				Size:    0,
+				Mode:    0444,
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "result"},
+			},
+			{
+				Name:    "error",
+				Size:    0,
+				Mode:    0444,
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "error"},
+			},
+		}, nil
+	}
+
+	// Database level: list tables (only if no session at root)
+	if tableName == "" && sid == "" {
+		tableNames, err := fs.plugin.backend.ListTables(fs.plugin.db, dbName)
+		if err != nil {
+			return nil, err
+		}
+
+		var tables []filesystem.FileInfo
+		for _, name := range tableNames {
+			tables = append(tables, filesystem.FileInfo{
+				Name:    name,
+				Size:    0,
+				Mode:    0755,
+				ModTime: now,
+				IsDir:   true,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "table"},
+			})
+		}
+		return tables, nil
 	}
 
 	// Database level: list tables
@@ -622,8 +1320,8 @@ func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 		return tables, nil
 	}
 
-	// Table level: list operations (schema, execute, query, count, insert_json)
-	if operation == "" {
+	// Table level: list ctl, schema, count, and session directories
+	if sid == "" && operation == "" {
 		// Check if table exists
 		exists, err := fs.tableExists(dbName, tableName)
 		if err != nil {
@@ -633,14 +1331,22 @@ func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 			return nil, fmt.Errorf("table '%s.%s' does not exist", dbName, tableName)
 		}
 
-		return []filesystem.FileInfo{
+		entries := []filesystem.FileInfo{
+			{
+				Name:    "ctl",
+				Size:    0,
+				Mode:    0444, // read-only (reading creates session)
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "ctl"},
+			},
 			{
 				Name:    "schema",
 				Size:    0,
 				Mode:    0444, // read-only
 				ModTime: now,
 				IsDir:   false,
-				Meta:    filesystem.MetaData{Name: PluginName, Type: "operation"},
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "schema"},
 			},
 			{
 				Name:    "count",
@@ -648,7 +1354,41 @@ func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 				Mode:    0444, // read-only
 				ModTime: now,
 				IsDir:   false,
-				Meta:    filesystem.MetaData{Name: PluginName, Type: "operation"},
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "count"},
+			},
+		}
+
+		// Add active session directories
+		sids := fs.sessionManager.ListSessions(dbName, tableName)
+		for _, s := range sids {
+			entries = append(entries, filesystem.FileInfo{
+				Name:    s,
+				Size:    0,
+				Mode:    0755,
+				ModTime: now,
+				IsDir:   true,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "session"},
+			})
+		}
+
+		return entries, nil
+	}
+
+	// Session directory: list session files
+	if sid != "" && operation == "" {
+		session := fs.sessionManager.GetSession(dbName, tableName, sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
+		}
+
+		return []filesystem.FileInfo{
+			{
+				Name:    "ctl",
+				Size:    0,
+				Mode:    0222, // write-only (writing closes session)
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "session-ctl"},
 			},
 			{
 				Name:    "query",
@@ -656,23 +1396,31 @@ func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 				Mode:    0222, // write-only
 				ModTime: now,
 				IsDir:   false,
-				Meta:    filesystem.MetaData{Name: PluginName, Type: "operation"},
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "query"},
 			},
 			{
-				Name:    "execute",
+				Name:    "result",
+				Size:    0,
+				Mode:    0444, // read-only
+				ModTime: now,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "result"},
+			},
+			{
+				Name:    "data",
 				Size:    0,
 				Mode:    0222, // write-only
 				ModTime: now,
 				IsDir:   false,
-				Meta:    filesystem.MetaData{Name: PluginName, Type: "operation"},
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "data"},
 			},
 			{
-				Name:    "insert_json",
+				Name:    "error",
 				Size:    0,
-				Mode:    0222, // write-only
+				Mode:    0444, // read-only
 				ModTime: now,
 				IsDir:   false,
-				Meta:    filesystem.MetaData{Name: PluginName, Type: "operation"},
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "error"},
 			},
 		}, nil
 	}
@@ -681,7 +1429,7 @@ func (fs *sqlfs2FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 }
 
 func (fs *sqlfs2FS) Stat(path string) (*filesystem.FileInfo, error) {
-	dbName, tableName, operation, err := fs.parsePath(path)
+	dbName, tableName, sid, operation, err := fs.parsePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -689,7 +1437,7 @@ func (fs *sqlfs2FS) Stat(path string) (*filesystem.FileInfo, error) {
 	now := time.Now()
 
 	// Root directory
-	if dbName == "" {
+	if dbName == "" && tableName == "" && sid == "" && operation == "" {
 		return &filesystem.FileInfo{
 			Name:    "/",
 			Size:    0,
@@ -700,8 +1448,61 @@ func (fs *sqlfs2FS) Stat(path string) (*filesystem.FileInfo, error) {
 		}, nil
 	}
 
+	// Root-level ctl file
+	if dbName == "" && tableName == "" && sid == "" && operation == "ctl" {
+		return &filesystem.FileInfo{
+			Name:    "ctl",
+			Size:    0,
+			Mode:    0444,
+			ModTime: now,
+			IsDir:   false,
+			Meta:    filesystem.MetaData{Name: PluginName, Type: "ctl"},
+		}, nil
+	}
+
+	// Root-level session directory
+	if dbName == "" && tableName == "" && sid != "" && operation == "" {
+		session := fs.sessionManager.GetSession("", "", sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
+		}
+		return &filesystem.FileInfo{
+			Name:    sid,
+			Size:    0,
+			Mode:    0755,
+			ModTime: now,
+			IsDir:   true,
+			Meta:    filesystem.MetaData{Name: PluginName, Type: "session"},
+		}, nil
+	}
+
+	// Root-level session files
+	if dbName == "" && tableName == "" && sid != "" && operation != "" {
+		session := fs.sessionManager.GetSession("", "", sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
+		}
+		var mode uint32
+		switch operation {
+		case "ctl", "query":
+			mode = 0222 // write-only
+		case "result", "error":
+			mode = 0444 // read-only
+		default:
+			return nil, fmt.Errorf("unknown session file: %s", operation)
+		}
+		return &filesystem.FileInfo{
+			Name:    operation,
+			Size:    0,
+			Mode:    mode,
+			ModTime: now,
+			IsDir:   false,
+			Meta:    filesystem.MetaData{Name: PluginName, Type: operation},
+		}, nil
+	}
+
 	// Database directory
-	if tableName == "" {
+	if tableName == "" && sid == "" {
 		return &filesystem.FileInfo{
 			Name:    dbName,
 			Size:    0,
@@ -713,7 +1514,7 @@ func (fs *sqlfs2FS) Stat(path string) (*filesystem.FileInfo, error) {
 	}
 
 	// Table directory
-	if operation == "" {
+	if sid == "" && operation == "" {
 		// Check if table exists
 		exists, err := fs.tableExists(dbName, tableName)
 		if err != nil {
@@ -733,22 +1534,64 @@ func (fs *sqlfs2FS) Stat(path string) (*filesystem.FileInfo, error) {
 		}, nil
 	}
 
-	// Operation files
-	mode := uint32(0644)
-	if operation == "schema" || operation == "count" {
-		mode = 0444 // read-only
-	} else if operation == "query" || operation == "execute" || operation == "insert_json" {
-		mode = 0222 // write-only
+	// Table-level files (ctl, schema, count)
+	if sid == "" && operation != "" {
+		mode := uint32(0444) // read-only by default
+		return &filesystem.FileInfo{
+			Name:    operation,
+			Size:    0,
+			Mode:    mode,
+			ModTime: now,
+			IsDir:   false,
+			Meta:    filesystem.MetaData{Name: PluginName, Type: operation},
+		}, nil
 	}
 
-	return &filesystem.FileInfo{
-		Name:    operation,
-		Size:    0,
-		Mode:    mode,
-		ModTime: now,
-		IsDir:   false,
-		Meta:    filesystem.MetaData{Name: PluginName, Type: "operation"},
-	}, nil
+	// Session directory
+	if sid != "" && operation == "" {
+		session := fs.sessionManager.GetSession(dbName, tableName, sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
+		}
+
+		return &filesystem.FileInfo{
+			Name:    sid,
+			Size:    0,
+			Mode:    0755,
+			ModTime: now,
+			IsDir:   true,
+			Meta:    filesystem.MetaData{Name: PluginName, Type: "session"},
+		}, nil
+	}
+
+	// Session-level files
+	if sid != "" && operation != "" {
+		session := fs.sessionManager.GetSession(dbName, tableName, sid)
+		if session == nil {
+			return nil, fmt.Errorf("session not found: %s", sid)
+		}
+
+		var mode uint32
+		switch operation {
+		case "ctl", "query", "data":
+			mode = 0222 // write-only
+		case "result", "error":
+			mode = 0444 // read-only
+		default:
+			return nil, fmt.Errorf("unknown session file: %s", operation)
+		}
+
+		return &filesystem.FileInfo{
+			Name:    operation,
+			Size:    0,
+			Mode:    mode,
+			ModTime: now,
+			IsDir:   false,
+			Meta:    filesystem.MetaData{Name: PluginName, Type: operation},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid path: %s", path)
 }
 
 func (fs *sqlfs2FS) Rename(oldPath, newPath string) error {
@@ -772,23 +1615,37 @@ func (fs *sqlfs2FS) OpenWrite(path string) (io.WriteCloser, error) {
 }
 
 func getReadme() string {
-	return `SQLFS2 Plugin - SQL Interface Through File System
+	return `SQLFS2 Plugin - Plan 9 Style SQL Interface
 
-This plugin provides a SQL interface through file system operations.
+This plugin provides a Plan 9 style SQL interface through file system operations.
+Each SQL session is represented as a directory with control files.
 
 DIRECTORY STRUCTURE:
-  /sqlfs2/<dbName>/<tableName>/{schema, count, execute, query, insert_json}
+  /sqlfs2/<dbName>/<tableName>/
+    ctl              # Read to create new session, returns session ID
+    schema           # Read-only: table structure (CREATE TABLE)
+    count            # Read-only: row count
+    <sid>/           # Session directory (numeric ID)
+      ctl            # Write "close" to close session
+      query          # Write SQL to execute
+      result         # Read query results (JSON)
+      data           # Write JSON to insert
+      error          # Read error messages
 
-FILES:
-  schema      - Read-only file that returns SHOW CREATE TABLE output
-  count       - Read-only file that returns SELECT COUNT(*) result
-  query       - Write-only file for SELECT queries (returns JSON results)
-  execute     - Write-only file for DML statements (INSERT/UPDATE/DELETE)
-  insert_json - Write-only file for inserting JSON documents (auto-generates INSERT statements)
-                Supports 3 modes (auto-detected):
-                1. Single JSON object: {"name": "Alice"}
-                2. JSON array: [{"name": "Bob"}, {"name": "Carol"}]
-                3. NDJSON stream: {"name": "Alice"}\n{"name": "Bob"}\n (newline-delimited)
+BASIC WORKFLOW:
+
+  # Create a session
+  sid=$(cat /sqlfs2/mydb/users/ctl)
+
+  # Execute query
+  echo 'SELECT * FROM users' > /sqlfs2/mydb/users/$sid/query
+
+  # Read results
+  cat /sqlfs2/mydb/users/$sid/result
+
+  # Close session
+  echo close > /sqlfs2/mydb/users/$sid/ctl
+  # or: rm -rf /sqlfs2/mydb/users/$sid
 
 CONFIGURATION:
 
@@ -800,6 +1657,7 @@ CONFIGURATION:
     [plugins.sqlfs2.config]
     backend = "sqlite"
     db_path = "sqlfs2.db"
+    session_timeout = "10m"  # Optional: auto-cleanup idle sessions
 
   MySQL Backend:
   [plugins.sqlfs2]
@@ -814,7 +1672,7 @@ CONFIGURATION:
     password = "password"
     database = "mydb"
 
-  TiDB Backend (Local):
+  TiDB Backend:
   [plugins.sqlfs2]
   enabled = true
   path = "/sqlfs2"
@@ -824,157 +1682,70 @@ CONFIGURATION:
     host = "127.0.0.1"
     port = "4000"
     user = "root"
-    password = ""
     database = "test"
+    enable_tls = true  # For TiDB Cloud
 
-  TiDB Cloud Backend (with TLS):
-  [plugins.sqlfs2]
-  enabled = true
-  path = "/sqlfs2"
+USAGE EXAMPLES:
 
-    [plugins.sqlfs2.config]
-    backend = "tidb"
-    user = "3YdGXuXNdAEmP1f.root"
-    password = "your_password"
-    host = "gateway01.us-west-2.prod.aws.tidbcloud.com"
-    port = "4000"
-    database = "test"
-    enable_tls = true
-    tls_server_name = "gateway01.us-west-2.prod.aws.tidbcloud.com"
-
-    # Or use DSN with TLS:
-    # dsn = "user:password@tcp(host:4000)/database?charset=utf8mb4&parseTime=True&tls=tidb-sqlfs2"
-
-USAGE:
-
-  View table schema:
-    cat /sqlfs2/mydb/users/schema
-
-  Get row count:
-    cat /sqlfs2/mydb/users/count
-
-  Execute SELECT query:
-    echo 'SELECT * FROM users LIMIT 10' > /sqlfs2/mydb/users/query
-    # Results are returned as JSON
-
-  Execute INSERT statement:
-    echo "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')" > /sqlfs2/mydb/users/execute
-
-  Execute UPDATE statement:
-    echo "UPDATE users SET name='Bob' WHERE id=1" > /sqlfs2/mydb/users/execute
-
-  Execute DELETE statement:
-    echo "DELETE FROM users WHERE id=1" > /sqlfs2/mydb/users/execute
-
-  Insert JSON document (single object):
-    echo '{"name": "Alice", "email": "alice@example.com", "age": 30}' > /sqlfs2/mydb/users/insert_json
-
-  Insert JSON array (multiple records):
-    echo '[{"name": "Bob", "email": "bob@example.com"}, {"name": "Carol", "email": "carol@example.com"}]' > /sqlfs2/mydb/users/insert_json
-
-  Insert using NDJSON stream mode (auto-detected when input has newline-separated JSON objects):
-    cat data.ndjson > /sqlfs2/mydb/users/insert_json
-    # data.ndjson format:
-    # {"name": "Alice", "email": "alice@example.com"}
-    # {"name": "Bob", "email": "bob@example.com"}
-    # {"name": "Carol", "email": "carol@example.com"}
-
-  List databases:
-    ls /sqlfs2/
-
-  List tables in a database:
-    ls /sqlfs2/mydb/
-
-  List operations for a table:
-    ls /sqlfs2/mydb/users/
-
-EXAMPLES:
-
-  # Create a test table
-  agfs:/> echo "CREATE TABLE IF NOT EXISTS test (id INT, name VARCHAR(100))" > /sqlfs2/main/execute
-
-  # Insert data
-  agfs:/> echo "INSERT INTO test VALUES (1, 'Alice')" > /sqlfs2/main/test/execute
-
-  # Query data
-  agfs:/> echo "SELECT * FROM test" > /sqlfs2/main/test/query
-  [
-    {
-      "id": 1,
-      "name": "Alice"
-    }
-  ]
-
-  # View schema
-  agfs:/> cat /sqlfs2/main/test/schema
-  CREATE TABLE test (id INT, name VARCHAR(100))
+  # View table schema
+  cat /sqlfs2/mydb/users/schema
 
   # Get row count
-  agfs:/> cat /sqlfs2/main/test/count
-  1
+  cat /sqlfs2/mydb/users/count
 
-  # Insert data using JSON (single object)
-  agfs:/> echo '{"id": 2, "name": "Bob"}' > /sqlfs2/main/test/insert_json
-  {
-    "inserted_count": 1
-  }
+  # Create session and query
+  sid=$(cat /sqlfs2/mydb/users/ctl)
+  echo 'SELECT * FROM users WHERE age > 18' > /sqlfs2/mydb/users/$sid/query
+  cat /sqlfs2/mydb/users/$sid/result
 
-  # Insert multiple records using JSON array
-  agfs:/> echo '[{"id": 3, "name": "Carol"}, {"id": 4, "name": "Dave"}]' > /sqlfs2/main/test/insert_json
-  {
-    "inserted_count": 2,
-    "mode": "normal"
-  }
+  # Execute INSERT/UPDATE/DELETE via query file
+  echo 'INSERT INTO users (name, age) VALUES ("Alice", 25)' > /sqlfs2/mydb/users/$sid/query
+  cat /sqlfs2/mydb/users/$sid/result  # Shows rows_affected
 
-  # Insert using NDJSON stream mode (newline-delimited JSON)
-  agfs:/> cat <<EOF > /sqlfs2/main/test/insert_json
-  {"id": 5, "name": "Eve"}
-  {"id": 6, "name": "Frank"}
-  {"id": 7, "name": "Grace"}
+  # Insert JSON data (single object)
+  echo '{"name": "Bob", "age": 30}' > /sqlfs2/mydb/users/$sid/data
+
+  # Insert JSON array (multiple records)
+  echo '[{"name": "Carol"}, {"name": "Dave"}]' > /sqlfs2/mydb/users/$sid/data
+
+  # Insert NDJSON stream
+  cat <<EOF > /sqlfs2/mydb/users/$sid/data
+  {"name": "Eve", "age": 28}
+  {"name": "Frank", "age": 35}
   EOF
-  {
-    "inserted_count": 3,
-    "mode": "stream",
-    "total_lines": 3
-  }
 
-  # Verify the inserts
-  agfs:/> echo "SELECT * FROM test" > /sqlfs2/main/test/query
-  [
-    {
-      "id": 1,
-      "name": "Alice"
-    },
-    {
-      "id": 2,
-      "name": "Bob"
-    },
-    {
-      "id": 3,
-      "name": "Carol"
-    },
-    {
-      "id": 4,
-      "name": "Dave"
-    }
-  ]
+  # Check for errors
+  cat /sqlfs2/mydb/users/$sid/error
+
+  # Close session
+  echo close > /sqlfs2/mydb/users/$sid/ctl
+
+  # List databases
+  ls /sqlfs2/
+
+  # List tables
+  ls /sqlfs2/mydb/
+
+  # List table files and sessions
+  ls /sqlfs2/mydb/users/
+
+SESSION MANAGEMENT:
+
+  Sessions are created by reading the table-level ctl file.
+  Each session has its own SQL transaction that is committed
+  when queries succeed. Sessions can be closed by:
+  - Writing "close" to the session's ctl file
+  - Removing the session directory (rm -rf /sqlfs2/db/tbl/$sid)
+  - Automatic timeout (if session_timeout is configured)
 
 ADVANTAGES:
-  - Direct SQL access through file system interface
-  - Supports SQLite, MySQL, and TiDB backends
+  - Plan 9 style interface: everything is a file
+  - Session-based transactions
   - JSON output for query results
-  - Auto-generate INSERT statements from JSON documents
-  - NDJSON streaming support for large data imports
-  - Simple and intuitive interface
-  - TLS support for secure TiDB Cloud connections
-
-USE CASES:
-  - Database exploration and querying
-  - Data manipulation through file operations
-  - Integration with shell scripts
-  - Quick database operations without SQL client
-  - Import JSON data without writing SQL INSERT statements
-  - Stream large NDJSON files directly into database
+  - Support for SQLite, MySQL, and TiDB backends
+  - Auto-generate INSERT from JSON documents
+  - NDJSON streaming for large imports
+  - Configurable session timeout
 `
 }
 
@@ -1007,6 +1778,7 @@ type SQLFileHandle struct {
 	// Parsed path components
 	dbName    string
 	tableName string
+	sid       string
 	operation string
 }
 
@@ -1479,7 +2251,7 @@ func (h *SQLFileHandle) Stat() (*filesystem.FileInfo, error) {
 
 // OpenHandle opens a file and returns a handle with a new transaction
 func (fs *sqlfs2FS) OpenHandle(path string, flags filesystem.OpenFlag, mode uint32) (filesystem.FileHandle, error) {
-	dbName, tableName, operation, err := fs.parsePath(path)
+	dbName, tableName, sid, operation, err := fs.parsePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1524,6 +2296,7 @@ func (fs *sqlfs2FS) OpenHandle(path string, flags filesystem.OpenFlag, mode uint
 		tx:        tx,
 		dbName:    dbName,
 		tableName: tableName,
+		sid:       sid,
 		operation: operation,
 	}
 
