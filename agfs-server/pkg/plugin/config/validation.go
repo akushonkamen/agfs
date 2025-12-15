@@ -221,7 +221,7 @@ func ValidateOnlyKnownKeys(config map[string]interface{}, allowedKeys []string) 
 	}
 
 	if len(unknownKeys) > 0 {
-		return fmt.Errorf("unknown configuration parameter(s) '%s' - allowed parameters are: %s",
+		return fmt.Errorf("unknown configuration parameter(s) '%s' - allowed parameters are: '%s'",
 			strings.Join(unknownKeys, "', '"),
 			strings.Join(allowedKeys, "', '"))
 	}
