@@ -98,9 +98,13 @@ class StreamingPipeline:
             process.stderr.write(f"Pipeline error: {e}\n")
             self.exit_codes[index] = 1
         finally:
-            # Signal EOF to next process (if any)
+            # Signal EOF to next process by properly closing stdout
+            # This ensures any buffered data is flushed before EOF
             if index < len(self.processes) - 1:
-                self.pipes[index].put(None)  # EOF marker
+                if isinstance(process.stdout, StreamingOutputStream):
+                    process.stdout.close()  # flush remaining buffer and send EOF
+                else:
+                    self.pipes[index].put(None)  # EOF marker
 
 
 class StreamingInputStream(InputStream):

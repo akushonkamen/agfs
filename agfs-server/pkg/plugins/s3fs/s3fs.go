@@ -25,10 +25,37 @@ type S3FS struct {
 	client     *S3Client
 	mu         sync.RWMutex
 	pluginName string
+
+	// Caches for performance optimization
+	dirCache  *ListDirCache
+	statCache *StatCache
+}
+
+// CacheConfig holds cache configuration
+type CacheConfig struct {
+	Enabled      bool
+	DirCacheTTL  time.Duration
+	StatCacheTTL time.Duration
+	MaxSize      int
+}
+
+// DefaultCacheConfig returns default cache configuration
+func DefaultCacheConfig() CacheConfig {
+	return CacheConfig{
+		Enabled:      true,
+		DirCacheTTL:  30 * time.Second,
+		StatCacheTTL: 60 * time.Second,
+		MaxSize:      1000,
+	}
 }
 
 // NewS3FS creates a new S3-backed file system
 func NewS3FS(cfg S3Config) (*S3FS, error) {
+	return NewS3FSWithCache(cfg, DefaultCacheConfig())
+}
+
+// NewS3FSWithCache creates a new S3-backed file system with cache configuration
+func NewS3FSWithCache(cfg S3Config, cacheCfg CacheConfig) (*S3FS, error) {
 	client, err := NewS3Client(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
@@ -37,6 +64,8 @@ func NewS3FS(cfg S3Config) (*S3FS, error) {
 	return &S3FS{
 		client:     client,
 		pluginName: PluginName,
+		dirCache:   NewListDirCache(cacheCfg.MaxSize, cacheCfg.DirCacheTTL, cacheCfg.Enabled),
+		statCache:  NewStatCache(cacheCfg.MaxSize*5, cacheCfg.StatCacheTTL, cacheCfg.Enabled),
 	}, nil
 }
 
@@ -69,7 +98,13 @@ func (fs *S3FS) Create(path string) error {
 	}
 
 	// Create empty file
-	return fs.client.PutObject(ctx, path, []byte{})
+	err = fs.client.PutObject(ctx, path, []byte{})
+	if err == nil {
+		// Invalidate caches
+		fs.dirCache.Invalidate(parent)
+		fs.statCache.Invalidate(path)
+	}
+	return err
 }
 
 func (fs *S3FS) Mkdir(path string, perm uint32) error {
@@ -101,7 +136,13 @@ func (fs *S3FS) Mkdir(path string, perm uint32) error {
 	}
 
 	// Create directory marker
-	return fs.client.CreateDirectory(ctx, path)
+	err = fs.client.CreateDirectory(ctx, path)
+	if err == nil {
+		// Invalidate caches
+		fs.dirCache.Invalidate(parent)
+		fs.statCache.Invalidate(path)
+	}
+	return err
 }
 
 func (fs *S3FS) Remove(path string) error {
@@ -111,6 +152,8 @@ func (fs *S3FS) Remove(path string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	parent := getParentPath(path)
+
 	// Check if it's a file
 	exists, err := fs.client.ObjectExists(ctx, path)
 	if err != nil {
@@ -119,7 +162,12 @@ func (fs *S3FS) Remove(path string) error {
 
 	if exists {
 		// It's a file, delete it
-		return fs.client.DeleteObject(ctx, path)
+		err = fs.client.DeleteObject(ctx, path)
+		if err == nil {
+			fs.dirCache.Invalidate(parent)
+			fs.statCache.Invalidate(path)
+		}
+		return err
 	}
 
 	// Check if it's a directory
@@ -143,7 +191,13 @@ func (fs *S3FS) Remove(path string) error {
 	}
 
 	// Delete directory marker
-	return fs.client.DeleteObject(ctx, path+"/")
+	err = fs.client.DeleteObject(ctx, path+"/")
+	if err == nil {
+		fs.dirCache.Invalidate(parent)
+		fs.dirCache.Invalidate(path)
+		fs.statCache.Invalidate(path)
+	}
+	return err
 }
 
 func (fs *S3FS) RemoveAll(path string) error {
@@ -153,7 +207,14 @@ func (fs *S3FS) RemoveAll(path string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	return fs.client.DeleteDirectory(ctx, path)
+	err := fs.client.DeleteDirectory(ctx, path)
+	if err == nil {
+		parent := getParentPath(path)
+		fs.dirCache.Invalidate(parent)
+		fs.dirCache.InvalidatePrefix(path)
+		fs.statCache.InvalidatePrefix(path)
+	}
+	return err
 }
 
 func (fs *S3FS) Read(path string, offset int64, size int64) ([]byte, error) {
@@ -163,7 +224,19 @@ func (fs *S3FS) Read(path string, offset int64, size int64) ([]byte, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
-	// Get the entire object (S3 doesn't support efficient range reads in this simple implementation)
+	// Use S3 Range request for efficient partial reads
+	if offset > 0 || size > 0 {
+		data, err := fs.client.GetObjectRange(ctx, path, offset, size)
+		if err != nil {
+			if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "NotFound") {
+				return nil, filesystem.ErrNotFound
+			}
+			return nil, err
+		}
+		return data, nil
+	}
+
+	// Full file read
 	data, err := fs.client.GetObject(ctx, path)
 	if err != nil {
 		if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "NotFound") {
@@ -172,8 +245,7 @@ func (fs *S3FS) Read(path string, offset int64, size int64) ([]byte, error) {
 		return nil, err
 	}
 
-	// Apply range read using common helper
-	return plugin.ApplyRangeRead(data, offset, size)
+	return data, nil
 }
 
 func (fs *S3FS) Write(path string, data []byte, offset int64, flags filesystem.WriteFlag) (int64, error) {
@@ -201,6 +273,11 @@ func (fs *S3FS) Write(path string, data []byte, offset int64, flags filesystem.W
 		return 0, err
 	}
 
+	// Invalidate caches
+	parent := getParentPath(path)
+	fs.dirCache.Invalidate(parent)
+	fs.statCache.Invalidate(path)
+
 	return int64(len(data)), nil
 }
 
@@ -210,6 +287,11 @@ func (fs *S3FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+
+	// Check cache first
+	if cached, ok := fs.dirCache.Get(path); ok {
+		return cached, nil
+	}
 
 	// Check if directory exists
 	if path != "" {
@@ -247,6 +329,9 @@ func (fs *S3FS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 		})
 	}
 
+	// Cache the result
+	fs.dirCache.Put(path, files)
+
 	return files, nil
 }
 
@@ -277,10 +362,15 @@ func (fs *S3FS) Stat(path string) (*filesystem.FileInfo, error) {
 		}, nil
 	}
 
+	// Check cache first
+	if cached, ok := fs.statCache.Get(path); ok {
+		return cached, nil
+	}
+
 	// Try as file first
 	head, err := fs.client.HeadObject(ctx, path)
 	if err == nil {
-		return &filesystem.FileInfo{
+		info := &filesystem.FileInfo{
 			Name:    filepath.Base(path),
 			Size:    aws.ToInt64(head.ContentLength),
 			Mode:    0644,
@@ -295,7 +385,9 @@ func (fs *S3FS) Stat(path string) (*filesystem.FileInfo, error) {
 					"prefix": fs.client.prefix,
 				},
 			},
-		}, nil
+		}
+		fs.statCache.Put(path, info)
+		return info, nil
 	}
 
 	// Try as directory
@@ -305,7 +397,7 @@ func (fs *S3FS) Stat(path string) (*filesystem.FileInfo, error) {
 	}
 
 	if dirExists {
-		return &filesystem.FileInfo{
+		info := &filesystem.FileInfo{
 			Name:    filepath.Base(path),
 			Size:    0,
 			Mode:    0755,
@@ -320,7 +412,9 @@ func (fs *S3FS) Stat(path string) (*filesystem.FileInfo, error) {
 					"prefix": fs.client.prefix,
 				},
 			},
-		}, nil
+		}
+		fs.statCache.Put(path, info)
+		return info, nil
 	}
 
 	return nil, filesystem.ErrNotFound
@@ -360,6 +454,14 @@ func (fs *S3FS) Rename(oldPath, newPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete source: %w", err)
 	}
+
+	// Invalidate caches
+	oldParent := getParentPath(oldPath)
+	newParent := getParentPath(newPath)
+	fs.dirCache.Invalidate(oldParent)
+	fs.dirCache.Invalidate(newParent)
+	fs.statCache.Invalidate(oldPath)
+	fs.statCache.Invalidate(newPath)
 
 	return nil
 }
@@ -415,7 +517,10 @@ func (p *S3FSPlugin) Name() string {
 
 func (p *S3FSPlugin) Validate(cfg map[string]interface{}) error {
 	// Check for unknown parameters
-	allowedKeys := []string{"bucket", "region", "access_key_id", "secret_access_key", "endpoint", "prefix", "disable_ssl", "mount_path"}
+	allowedKeys := []string{
+		"bucket", "region", "access_key_id", "secret_access_key", "endpoint", "prefix", "disable_ssl", "mount_path",
+		"cache_enabled", "cache_ttl", "stat_cache_ttl", "cache_max_size",
+	}
 	if err := config.ValidateOnlyKnownKeys(cfg, allowedKeys); err != nil {
 		return err
 	}
@@ -437,35 +542,48 @@ func (p *S3FSPlugin) Validate(cfg map[string]interface{}) error {
 		return err
 	}
 
+	// Validate cache_enabled (optional boolean)
+	if err := config.ValidateBoolType(cfg, "cache_enabled"); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func (p *S3FSPlugin) Initialize(config map[string]interface{}) error {
 	p.config = config
 
-	// Parse configuration
+	// Parse S3 configuration
 	cfg := S3Config{
-		Region: getStringConfig(config, "region", "us-east-1"),
-		Bucket: getStringConfig(config, "bucket", ""),
-		AccessKeyID: getStringConfig(config, "access_key_id", ""),
+		Region:          getStringConfig(config, "region", "us-east-1"),
+		Bucket:          getStringConfig(config, "bucket", ""),
+		AccessKeyID:     getStringConfig(config, "access_key_id", ""),
 		SecretAccessKey: getStringConfig(config, "secret_access_key", ""),
-		Endpoint: getStringConfig(config, "endpoint", ""),
-		Prefix: getStringConfig(config, "prefix", ""),
-		DisableSSL: getBoolConfig(config, "disable_ssl", false),
+		Endpoint:        getStringConfig(config, "endpoint", ""),
+		Prefix:          getStringConfig(config, "prefix", ""),
+		DisableSSL:      getBoolConfig(config, "disable_ssl", false),
 	}
 
 	if cfg.Bucket == "" {
 		return fmt.Errorf("bucket name is required")
 	}
 
-	// Create S3FS instance
-	fs, err := NewS3FS(cfg)
+	// Parse cache configuration
+	cacheCfg := CacheConfig{
+		Enabled:      getBoolConfig(config, "cache_enabled", true),
+		DirCacheTTL:  getDurationConfig(config, "cache_ttl", 30*time.Second),
+		StatCacheTTL: getDurationConfig(config, "stat_cache_ttl", 60*time.Second),
+		MaxSize:      getIntConfig(config, "cache_max_size", 1000),
+	}
+
+	// Create S3FS instance with cache
+	fs, err := NewS3FSWithCache(cfg, cacheCfg)
 	if err != nil {
 		return fmt.Errorf("failed to initialize s3fs: %w", err)
 	}
 	p.fs = fs
 
-	log.Infof("[s3fs] Initialized with bucket: %s, region: %s", cfg.Bucket, cfg.Region)
+	log.Infof("[s3fs] Initialized with bucket: %s, region: %s, cache: %v", cfg.Bucket, cfg.Region, cacheCfg.Enabled)
 	return nil
 }
 
@@ -527,6 +645,34 @@ func (p *S3FSPlugin) GetConfigParams() []plugin.ConfigParameter {
 			Required:    false,
 			Default:     "false",
 			Description: "Disable SSL for S3 connections",
+		},
+		{
+			Name:        "cache_enabled",
+			Type:        "bool",
+			Required:    false,
+			Default:     "true",
+			Description: "Enable caching for directory listings and stat results",
+		},
+		{
+			Name:        "cache_ttl",
+			Type:        "string",
+			Required:    false,
+			Default:     "30s",
+			Description: "TTL for directory listing cache (e.g., '30s', '1m')",
+		},
+		{
+			Name:        "stat_cache_ttl",
+			Type:        "string",
+			Required:    false,
+			Default:     "60s",
+			Description: "TTL for stat result cache (e.g., '60s', '2m')",
+		},
+		{
+			Name:        "cache_max_size",
+			Type:        "int",
+			Required:    false,
+			Default:     "1000",
+			Description: "Maximum number of entries in each cache",
 		},
 	}
 }
@@ -676,6 +822,33 @@ func getStringConfig(config map[string]interface{}, key, defaultValue string) st
 func getBoolConfig(config map[string]interface{}, key string, defaultValue bool) bool {
 	if val, ok := config[key].(bool); ok {
 		return val
+	}
+	return defaultValue
+}
+
+func getIntConfig(config map[string]interface{}, key string, defaultValue int) int {
+	if val, ok := config[key].(int); ok {
+		return val
+	}
+	if val, ok := config[key].(float64); ok {
+		return int(val)
+	}
+	return defaultValue
+}
+
+func getDurationConfig(config map[string]interface{}, key string, defaultValue time.Duration) time.Duration {
+	// Try string format like "30s", "1m", "1h"
+	if val, ok := config[key].(string); ok && val != "" {
+		if d, err := time.ParseDuration(val); err == nil {
+			return d
+		}
+	}
+	// Try numeric (seconds)
+	if val, ok := config[key].(int); ok {
+		return time.Duration(val) * time.Second
+	}
+	if val, ok := config[key].(float64); ok {
+		return time.Duration(val) * time.Second
 	}
 	return defaultValue
 }

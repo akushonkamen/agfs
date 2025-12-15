@@ -147,6 +147,40 @@ func (c *S3Client) GetObjectStream(ctx context.Context, path string) (io.ReadClo
 	return result.Body, nil
 }
 
+// GetObjectRange retrieves a byte range from an S3 object
+// offset: starting byte position (0-based)
+// size: number of bytes to read (-1 for all remaining bytes from offset)
+func (c *S3Client) GetObjectRange(ctx context.Context, path string, offset, size int64) ([]byte, error) {
+	key := c.buildKey(path)
+
+	// Build range header
+	var rangeHeader string
+	if size < 0 {
+		// From offset to end
+		rangeHeader = fmt.Sprintf("bytes=%d-", offset)
+	} else {
+		// Specific range
+		rangeHeader = fmt.Sprintf("bytes=%d-%d", offset, offset+size-1)
+	}
+
+	result, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(rangeHeader),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get object range %s: %w", key, err)
+	}
+	defer result.Body.Close()
+
+	data, err := io.ReadAll(result.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read object body: %w", err)
+	}
+
+	return data, nil
+}
+
 // PutObject uploads an object to S3
 func (c *S3Client) PutObject(ctx context.Context, path string, data []byte) error {
 	key := c.buildKey(path)

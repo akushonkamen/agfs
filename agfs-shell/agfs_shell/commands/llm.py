@@ -18,12 +18,15 @@ def cmd_llm(process: Process) -> int:
            cat files | llm [OPTIONS] [PROMPT]
            cat image.jpg | llm [OPTIONS] [PROMPT]
            cat audio.wav | llm [OPTIONS] [PROMPT]
+           llm --input-file=image.jpg [PROMPT]
 
     Options:
-        -m MODEL    Specify the model to use (default: gpt-4o-mini)
-        -s SYSTEM   System prompt
-        -k KEY      API key (overrides config/env)
-        -c CONFIG   Path to config file (default: /etc/llm.yaml)
+        -m MODEL          Specify the model to use (default: gpt-4o-mini)
+        -s SYSTEM         System prompt
+        -k KEY            API key (overrides config/env)
+        -c CONFIG         Path to config file (default: /etc/llm.yaml)
+        -i FILE           Input file (text, image, or audio)
+        --input-file=FILE Same as -i
 
     Configuration:
         The command reads configuration from:
@@ -61,6 +64,11 @@ def cmd_llm(process: Process) -> int:
         cat podcast.mp3 | llm "extract key points"
         cat meeting.wav | llm
 
+        # Using --input-file (recommended for binary files)
+        llm -i photo.jpg "What's in this image?"
+        llm --input-file=recording.wav "summarize this"
+        llm -i document.txt "translate to Chinese"
+
         # Advanced usage
         llm -m claude-3-5-sonnet-20241022 "Explain quantum computing"
         llm -s "You are a helpful assistant" "How do I install Python?"
@@ -78,6 +86,7 @@ def cmd_llm(process: Process) -> int:
     system_prompt = None
     api_key = None
     config_path = "/etc/llm.yaml"
+    input_file = None
     prompt_parts = []
 
     i = 0
@@ -94,6 +103,15 @@ def cmd_llm(process: Process) -> int:
             i += 2
         elif arg == '-c' and i + 1 < len(process.args):
             config_path = process.args[i + 1]
+            i += 2
+        elif arg == '-i' and i + 1 < len(process.args):
+            input_file = process.args[i + 1]
+            i += 2
+        elif arg.startswith('--input-file='):
+            input_file = arg[len('--input-file='):]
+            i += 1
+        elif arg == '--input-file' and i + 1 < len(process.args):
+            input_file = process.args[i + 1]
             i += 2
         else:
             prompt_parts.append(arg)
@@ -215,19 +233,44 @@ def cmd_llm(process: Process) -> int:
             except Exception:
                 pass
 
-    # Get stdin content if available (keep as binary first)
+    # Get input content: from --input-file or stdin
     stdin_binary = None
     stdin_text = None
-    # Use read() instead of get_value() to properly support streaming pipelines
-    stdin_binary = process.stdin.read()
-    if not stdin_binary:
-        # Try to read from real stdin (but don't block if not available)
+    is_in_pipeline = False
+
+    # If input file is specified, read from file
+    if input_file:
         try:
-            import select
-            if select.select([sys.stdin], [], [], 0.0)[0]:
-                stdin_binary = sys.stdin.buffer.read()
-        except Exception:
-            pass  # No stdin available
+            if process.filesystem:
+                stdin_binary = process.filesystem.read_file(input_file)
+            else:
+                with open(input_file, 'rb') as f:
+                    stdin_binary = f.read()
+            if not stdin_binary:
+                process.stderr.write(f"llm: input file is empty: {input_file}\n".encode('utf-8'))
+                return 1
+        except Exception as e:
+            error_msg = str(e)
+            if "No such file or directory" in error_msg or "not found" in error_msg.lower():
+                process.stderr.write(f"llm: {input_file}: No such file or directory\n".encode('utf-8'))
+            else:
+                process.stderr.write(f"llm: failed to read {input_file}: {error_msg}\n".encode('utf-8'))
+            return 1
+    else:
+        # Use read() instead of get_value() to properly support streaming pipelines
+        stdin_binary = process.stdin.read()
+
+        # Debug: check if we're in a pipeline but got empty stdin
+        is_in_pipeline = hasattr(process.stdin, 'pipe')  # StreamingInputStream has pipe attribute
+
+        if not stdin_binary:
+            # Try to read from real stdin (but don't block if not available)
+            try:
+                import select
+                if select.select([sys.stdin], [], [], 0.0)[0]:
+                    stdin_binary = sys.stdin.buffer.read()
+            except Exception:
+                pass  # No stdin available
 
     # Check if stdin is an image or audio
     is_stdin_image = False
@@ -256,6 +299,10 @@ def cmd_llm(process: Process) -> int:
     prompt_text = None
     if prompt_parts:
         prompt_text = ' '.join(prompt_parts)
+
+    # Warn if we're in a pipeline but got empty stdin (likely indicates an error in previous command)
+    if is_in_pipeline and not stdin_binary and not stdin_text and prompt_text:
+        process.stderr.write(b"llm: warning: received empty input from pipeline, proceeding with prompt only\n")
 
     # Determine the final prompt and attachments
     attachments = []
