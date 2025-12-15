@@ -59,12 +59,12 @@ type SuccessResponse struct {
 
 // FileInfoResponse represents file info response
 type FileInfoResponse struct {
-	Name    string                `json:"name"`
-	Size    int64                 `json:"size"`
-	Mode    uint32                `json:"mode"`
-	ModTime string                `json:"modTime"`
-	IsDir   bool                  `json:"isDir"`
-	Meta    filesystem.MetaData   `json:"meta,omitempty"` // Structured metadata
+	Name    string              `json:"name"`
+	Size    int64               `json:"size"`
+	Mode    uint32              `json:"mode"`
+	ModTime string              `json:"modTime"`
+	IsDir   bool                `json:"isDir"`
+	Meta    filesystem.MetaData `json:"meta,omitempty"` // Structured metadata
 }
 
 // ListResponse represents directory listing response
@@ -522,8 +522,8 @@ func (h *Handler) calculateMD5Digest(path string) (string, error) {
 
 // CapabilitiesResponse represents the server capabilities
 type CapabilitiesResponse struct {
-	Version   string   `json:"version"`
-	Features  []string `json:"features"`
+	Version  string   `json:"version"`
+	Features []string `json:"features"`
 }
 
 // Capabilities handles GET /capabilities
@@ -801,7 +801,7 @@ func (h *Handler) streamFromStreamReader(w http.ResponseWriter, r *http.Request,
 			}
 		}
 		if eof {
-			log.Infof("Stream completed (EOF)")
+			log.Debug("Stream completed (EOF)")
 			return
 		}
 	}
@@ -809,18 +809,18 @@ func (h *Handler) streamFromStreamReader(w http.ResponseWriter, r *http.Request,
 
 // GrepRequest represents a grep search request
 type GrepRequest struct {
-	Path            string `json:"path"`              // Path to file or directory to search
-	Pattern         string `json:"pattern"`           // Regular expression pattern
-	Recursive       bool   `json:"recursive"`         // Whether to search recursively in directories
-	CaseInsensitive bool   `json:"case_insensitive"`  // Case-insensitive matching
-	Stream          bool   `json:"stream"`            // Stream results as NDJSON (one match per line)
+	Path            string `json:"path"`             // Path to file or directory to search
+	Pattern         string `json:"pattern"`          // Regular expression pattern
+	Recursive       bool   `json:"recursive"`        // Whether to search recursively in directories
+	CaseInsensitive bool   `json:"case_insensitive"` // Case-insensitive matching
+	Stream          bool   `json:"stream"`           // Stream results as NDJSON (one match per line)
 }
 
 // GrepMatch represents a single match result
 type GrepMatch struct {
-	File    string `json:"file"`     // File path
-	Line    int    `json:"line"`     // Line number (1-indexed)
-	Content string `json:"content"`  // Matched line content
+	File    string `json:"file"`    // File path
+	Line    int    `json:"line"`    // Line number (1-indexed)
+	Content string `json:"content"` // Matched line content
 }
 
 // GrepResponse represents the grep search results
