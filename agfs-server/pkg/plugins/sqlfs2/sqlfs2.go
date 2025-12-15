@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
@@ -103,7 +104,11 @@ func (p *SQLFS2Plugin) Initialize(cfg map[string]interface{}) error {
 }
 
 func (p *SQLFS2Plugin) GetFileSystem() filesystem.FileSystem {
-	return &sqlfs2FS{plugin: p}
+	return &sqlfs2FS{
+		plugin:       p,
+		handles:      make(map[int64]*SQLFileHandle),
+		nextHandleID: 1,
+	}
 }
 
 func (p *SQLFS2Plugin) GetReadme() string {
@@ -201,7 +206,10 @@ func (p *SQLFS2Plugin) Shutdown() error {
 
 // sqlfs2FS implements the FileSystem interface for SQL operations
 type sqlfs2FS struct {
-	plugin *SQLFS2Plugin
+	plugin       *SQLFS2Plugin
+	handles      map[int64]*SQLFileHandle
+	handlesMu    sync.RWMutex
+	nextHandleID int64
 }
 
 // parsePath parses a path like /dbName/tableName/operation into components
@@ -973,3 +981,581 @@ USE CASES:
 // Ensure SQLFS2Plugin implements ServicePlugin
 var _ plugin.ServicePlugin = (*SQLFS2Plugin)(nil)
 var _ filesystem.FileSystem = (*sqlfs2FS)(nil)
+var _ filesystem.HandleFS = (*sqlfs2FS)(nil)
+
+// ============================================================================
+// HandleFS Implementation
+// ============================================================================
+
+// SQLFileHandle implements FileHandle using a SQL transaction
+type SQLFileHandle struct {
+	id        int64
+	path      string
+	flags     filesystem.OpenFlag
+	fs        *sqlfs2FS
+	tx        *sql.Tx
+	committed bool
+	closed    bool
+	mu        sync.Mutex
+
+	// Buffer for accumulating writes (for query operations)
+	writeBuffer bytes.Buffer
+	// Buffer for read results
+	readBuffer bytes.Buffer
+	readPos    int64
+
+	// Parsed path components
+	dbName    string
+	tableName string
+	operation string
+}
+
+// ID returns the unique identifier of this handle
+func (h *SQLFileHandle) ID() int64 {
+	return h.id
+}
+
+// Path returns the file path this handle is associated with
+func (h *SQLFileHandle) Path() string {
+	return h.path
+}
+
+// Flags returns the open flags used when opening this handle
+func (h *SQLFileHandle) Flags() filesystem.OpenFlag {
+	return h.flags
+}
+
+// Read reads up to len(buf) bytes from the current position
+func (h *SQLFileHandle) Read(buf []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return 0, fmt.Errorf("handle closed")
+	}
+
+	// Check read permission
+	accessMode := h.flags & 0x3
+	if accessMode != filesystem.O_RDONLY && accessMode != filesystem.O_RDWR {
+		return 0, fmt.Errorf("handle not opened for reading")
+	}
+
+	// If read buffer is empty, populate it based on operation type
+	if h.readBuffer.Len() == 0 && h.readPos == 0 {
+		if err := h.populateReadBuffer(); err != nil {
+			return 0, err
+		}
+	}
+
+	data := h.readBuffer.Bytes()
+	if h.readPos >= int64(len(data)) {
+		return 0, io.EOF
+	}
+
+	n := copy(buf, data[h.readPos:])
+	h.readPos += int64(n)
+	return n, nil
+}
+
+// populateReadBuffer fills the read buffer based on the operation type
+func (h *SQLFileHandle) populateReadBuffer() error {
+	switch h.operation {
+	case "schema":
+		if h.dbName == "" || h.tableName == "" {
+			return fmt.Errorf("invalid path for schema")
+		}
+		createTableStmt, err := h.fs.plugin.backend.GetTableSchema(h.fs.plugin.db, h.dbName, h.tableName)
+		if err != nil {
+			return err
+		}
+		h.readBuffer.WriteString(createTableStmt + "\n")
+
+	case "count":
+		if h.dbName == "" || h.tableName == "" {
+			return fmt.Errorf("invalid path for count")
+		}
+		// Use transaction for count query
+		sqlStmt := fmt.Sprintf("SELECT COUNT(*) FROM %s.%s", h.dbName, h.tableName)
+		var count int64
+		var err error
+		if h.tx != nil {
+			err = h.tx.QueryRow(sqlStmt).Scan(&count)
+		} else {
+			err = h.fs.plugin.db.QueryRow(sqlStmt).Scan(&count)
+		}
+		if err != nil {
+			return fmt.Errorf("count query error: %w", err)
+		}
+		h.readBuffer.WriteString(fmt.Sprintf("%d\n", count))
+
+	case "query", "execute", "insert_json":
+		// These are write-only operations, but we can return empty
+		return nil
+
+	default:
+		return fmt.Errorf("cannot read from directory")
+	}
+
+	return nil
+}
+
+// ReadAt reads len(buf) bytes from the specified offset (pread)
+func (h *SQLFileHandle) ReadAt(buf []byte, offset int64) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return 0, fmt.Errorf("handle closed")
+	}
+
+	// Check read permission
+	accessMode := h.flags & 0x3
+	if accessMode != filesystem.O_RDONLY && accessMode != filesystem.O_RDWR {
+		return 0, fmt.Errorf("handle not opened for reading")
+	}
+
+	// If read buffer is empty, populate it
+	if h.readBuffer.Len() == 0 {
+		if err := h.populateReadBuffer(); err != nil {
+			return 0, err
+		}
+	}
+
+	data := h.readBuffer.Bytes()
+	if offset >= int64(len(data)) {
+		return 0, io.EOF
+	}
+
+	n := copy(buf, data[offset:])
+	return n, nil
+}
+
+// Write writes data at the current position (appends to write buffer)
+func (h *SQLFileHandle) Write(data []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return 0, fmt.Errorf("handle closed")
+	}
+
+	// Check write permission
+	accessMode := h.flags & 0x3
+	if accessMode != filesystem.O_WRONLY && accessMode != filesystem.O_RDWR {
+		return 0, fmt.Errorf("handle not opened for writing")
+	}
+
+	if h.operation == "schema" || h.operation == "count" {
+		return 0, fmt.Errorf("%s is read-only", h.operation)
+	}
+
+	// Append to write buffer
+	n, err := h.writeBuffer.Write(data)
+	return n, err
+}
+
+// WriteAt writes data at the specified offset (pwrite)
+func (h *SQLFileHandle) WriteAt(data []byte, offset int64) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return 0, fmt.Errorf("handle closed")
+	}
+
+	// Check write permission
+	accessMode := h.flags & 0x3
+	if accessMode != filesystem.O_WRONLY && accessMode != filesystem.O_RDWR {
+		return 0, fmt.Errorf("handle not opened for writing")
+	}
+
+	if h.operation == "schema" || h.operation == "count" {
+		return 0, fmt.Errorf("%s is read-only", h.operation)
+	}
+
+	// For SQL operations, we don't support random writes
+	// Just append the data
+	n, err := h.writeBuffer.Write(data)
+	return n, err
+}
+
+// Seek moves the read/write position
+func (h *SQLFileHandle) Seek(offset int64, whence int) (int64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return 0, fmt.Errorf("handle closed")
+	}
+
+	// Only support seek for read operations
+	data := h.readBuffer.Bytes()
+	var newPos int64
+
+	switch whence {
+	case io.SeekStart:
+		newPos = offset
+	case io.SeekCurrent:
+		newPos = h.readPos + offset
+	case io.SeekEnd:
+		newPos = int64(len(data)) + offset
+	default:
+		return 0, fmt.Errorf("invalid whence: %d", whence)
+	}
+
+	if newPos < 0 {
+		return 0, fmt.Errorf("negative position")
+	}
+
+	h.readPos = newPos
+	return h.readPos, nil
+}
+
+// Sync executes the buffered SQL and commits the transaction
+func (h *SQLFileHandle) Sync() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return fmt.Errorf("handle closed")
+	}
+
+	if h.committed {
+		return nil // Already committed
+	}
+
+	if h.tx == nil {
+		return nil // No transaction to commit
+	}
+
+	// Execute any buffered SQL statements
+	if h.writeBuffer.Len() > 0 {
+		if err := h.executeBufferedSQL(); err != nil {
+			return err
+		}
+	}
+
+	// Commit the transaction
+	if err := h.tx.Commit(); err != nil {
+		return fmt.Errorf("transaction commit failed: %w", err)
+	}
+
+	h.committed = true
+	log.Debugf("[sqlfs2] Transaction committed for handle %d", h.id)
+	return nil
+}
+
+// executeBufferedSQL executes the SQL statements in the write buffer
+func (h *SQLFileHandle) executeBufferedSQL() error {
+	sqlStmt := strings.TrimSpace(h.writeBuffer.String())
+	if sqlStmt == "" {
+		return nil
+	}
+
+	switch h.operation {
+	case "query":
+		// Execute SELECT query in transaction
+		rows, err := h.tx.Query(sqlStmt)
+		if err != nil {
+			return fmt.Errorf("query error: %w", err)
+		}
+		defer rows.Close()
+
+		// Get column names
+		columns, err := rows.Columns()
+		if err != nil {
+			return fmt.Errorf("failed to get columns: %w", err)
+		}
+
+		// Read all results
+		var results []map[string]interface{}
+		for rows.Next() {
+			values := make([]interface{}, len(columns))
+			valuePtrs := make([]interface{}, len(columns))
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+
+			if err := rows.Scan(valuePtrs...); err != nil {
+				return fmt.Errorf("scan error: %w", err)
+			}
+
+			row := make(map[string]interface{})
+			for i, col := range columns {
+				val := values[i]
+				if b, ok := val.([]byte); ok {
+					row[col] = string(b)
+				} else {
+					row[col] = val
+				}
+			}
+			results = append(results, row)
+		}
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("rows error: %w", err)
+		}
+
+		// Store results in read buffer for subsequent reads
+		jsonData, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			return fmt.Errorf("json marshal error: %w", err)
+		}
+		h.readBuffer.Reset()
+		h.readBuffer.Write(jsonData)
+		h.readBuffer.WriteString("\n")
+		h.readPos = 0
+
+	case "execute":
+		// Execute DML statement in transaction
+		_, err := h.tx.Exec(sqlStmt)
+		if err != nil {
+			return fmt.Errorf("execution error: %w", err)
+		}
+
+	case "insert_json":
+		// Execute JSON insert in transaction
+		if err := h.executeInsertJSON(sqlStmt); err != nil {
+			return err
+		}
+
+	default:
+		return fmt.Errorf("unknown operation: %s", h.operation)
+	}
+
+	// Clear write buffer after execution
+	h.writeBuffer.Reset()
+	return nil
+}
+
+// executeInsertJSON handles JSON insert operations within the transaction
+func (h *SQLFileHandle) executeInsertJSON(data string) error {
+	if h.dbName == "" || h.tableName == "" {
+		return fmt.Errorf("invalid path for insert_json")
+	}
+
+	// Get table columns
+	columns, err := h.fs.plugin.backend.GetTableColumns(h.fs.plugin.db, h.dbName, h.tableName)
+	if err != nil {
+		return fmt.Errorf("failed to get table columns: %w", err)
+	}
+
+	if len(columns) == 0 {
+		return fmt.Errorf("no columns found for table %s", h.tableName)
+	}
+
+	columnNames := make([]string, len(columns))
+	for i, col := range columns {
+		columnNames[i] = col.Name
+	}
+
+	// Parse JSON
+	var records []map[string]interface{}
+	lines := strings.Split(data, "\n")
+
+	// Check for NDJSON mode
+	nonEmptyLines := 0
+	firstNonEmptyIdx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmptyLines++
+			if firstNonEmptyIdx == -1 {
+				firstNonEmptyIdx = i
+			}
+		}
+	}
+
+	isStreamMode := false
+	if nonEmptyLines > 1 && firstNonEmptyIdx >= 0 {
+		var testObj map[string]interface{}
+		firstLine := strings.TrimSpace(lines[firstNonEmptyIdx])
+		if err := json.Unmarshal([]byte(firstLine), &testObj); err == nil {
+			isStreamMode = true
+		}
+	}
+
+	if isStreamMode {
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var record map[string]interface{}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				continue
+			}
+			records = append(records, record)
+		}
+	} else {
+		var jsonData interface{}
+		if err := json.Unmarshal([]byte(data), &jsonData); err != nil {
+			return fmt.Errorf("invalid JSON: %w", err)
+		}
+
+		switch v := jsonData.(type) {
+		case map[string]interface{}:
+			records = append(records, v)
+		case []interface{}:
+			for i, item := range v {
+				if record, ok := item.(map[string]interface{}); ok {
+					records = append(records, record)
+				} else {
+					return fmt.Errorf("element at index %d is not a JSON object", i)
+				}
+			}
+		default:
+			return fmt.Errorf("JSON must be an object or array of objects")
+		}
+	}
+
+	// Execute inserts in transaction
+	for idx, record := range records {
+		values := make([]interface{}, len(columnNames))
+		for i, colName := range columnNames {
+			if val, ok := record[colName]; ok {
+				values[i] = val
+			} else {
+				values[i] = nil
+			}
+		}
+
+		placeholders := make([]string, len(columnNames))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+
+		insertSQL := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)",
+			h.dbName, h.tableName,
+			strings.Join(columnNames, ", "),
+			strings.Join(placeholders, ", "))
+
+		if _, err := h.tx.Exec(insertSQL, values...); err != nil {
+			return fmt.Errorf("insert error at record %d: %w", idx+1, err)
+		}
+	}
+
+	return nil
+}
+
+// Close closes the handle and rolls back if not committed
+func (h *SQLFileHandle) Close() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return nil
+	}
+
+	h.closed = true
+
+	// Rollback if not committed
+	if h.tx != nil && !h.committed {
+		if err := h.tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			log.Warnf("[sqlfs2] Transaction rollback failed for handle %d: %v", h.id, err)
+		} else {
+			log.Debugf("[sqlfs2] Transaction rolled back for handle %d", h.id)
+		}
+	}
+
+	// Remove from handles map
+	h.fs.handlesMu.Lock()
+	delete(h.fs.handles, h.id)
+	h.fs.handlesMu.Unlock()
+
+	return nil
+}
+
+// Stat returns file information
+func (h *SQLFileHandle) Stat() (*filesystem.FileInfo, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return nil, fmt.Errorf("handle closed")
+	}
+
+	return h.fs.Stat(h.path)
+}
+
+// OpenHandle opens a file and returns a handle with a new transaction
+func (fs *sqlfs2FS) OpenHandle(path string, flags filesystem.OpenFlag, mode uint32) (filesystem.FileHandle, error) {
+	dbName, tableName, operation, err := fs.parsePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only support handle operations on operation files
+	if operation == "" {
+		return nil, fmt.Errorf("cannot open handle on directory: %s", path)
+	}
+
+	// Check if table exists for table-level operations
+	if tableName != "" {
+		exists, err := fs.tableExists(dbName, tableName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check table existence: %w", err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("table '%s.%s' does not exist", dbName, tableName)
+		}
+	}
+
+	// Switch to database if needed
+	if err := fs.plugin.backend.SwitchDatabase(fs.plugin.db, dbName); err != nil {
+		return nil, err
+	}
+
+	// Start a new transaction
+	tx, err := fs.plugin.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Create handle with auto-incremented ID
+	fs.handlesMu.Lock()
+	handleID := fs.nextHandleID
+	fs.nextHandleID++
+
+	handle := &SQLFileHandle{
+		id:        handleID,
+		path:      path,
+		flags:     flags,
+		fs:        fs,
+		tx:        tx,
+		dbName:    dbName,
+		tableName: tableName,
+		operation: operation,
+	}
+
+	fs.handles[handleID] = handle
+	fs.handlesMu.Unlock()
+
+	log.Debugf("[sqlfs2] Opened handle %d for %s (transaction started)", handleID, path)
+	return handle, nil
+}
+
+// GetHandle retrieves an existing handle by its ID
+func (fs *sqlfs2FS) GetHandle(id int64) (filesystem.FileHandle, error) {
+	fs.handlesMu.RLock()
+	defer fs.handlesMu.RUnlock()
+
+	handle, exists := fs.handles[id]
+	if !exists {
+		return nil, filesystem.ErrNotFound
+	}
+
+	return handle, nil
+}
+
+// CloseHandle closes a handle by its ID
+func (fs *sqlfs2FS) CloseHandle(id int64) error {
+	fs.handlesMu.RLock()
+	handle, exists := fs.handles[id]
+	fs.handlesMu.RUnlock()
+
+	if !exists {
+		return filesystem.ErrNotFound
+	}
+
+	return handle.Close()
+}
