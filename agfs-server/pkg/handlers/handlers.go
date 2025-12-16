@@ -87,6 +87,16 @@ type ChmodRequest struct {
 	Mode uint32 `json:"mode"`
 }
 
+// SymlinkRequest represents a symlink request
+type SymlinkRequest struct {
+	Target string `json:"target"` // Target path (what the symlink points to)
+}
+
+// ReadlinkResponse represents a readlink response
+type ReadlinkResponse struct {
+	Target string `json:"target"` // Target path that the symlink points to
+}
+
 // DigestRequest represents a digest request
 type DigestRequest struct {
 	Algorithm string `json:"algorithm"` // "xxh3" or "md5"
@@ -619,6 +629,66 @@ func (h *Handler) Touch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SuccessResponse{Message: "touched"})
 }
 
+// Symlink handles POST /symlink?path=<linkPath>
+func (h *Handler) Symlink(w http.ResponseWriter, r *http.Request) {
+	linkPath := r.URL.Query().Get("path")
+	if linkPath == "" {
+		writeError(w, http.StatusBadRequest, "path parameter is required")
+		return
+	}
+
+	var req SymlinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Target == "" {
+		writeError(w, http.StatusBadRequest, "target is required")
+		return
+	}
+
+	// Check if filesystem implements Symlinker
+	symlinker, ok := h.fs.(filesystem.Symlinker)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "symlink not supported by this filesystem")
+		return
+	}
+
+	if err := symlinker.Symlink(req.Target, linkPath); err != nil {
+		status := mapErrorToStatus(err)
+		writeError(w, status, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, SuccessResponse{Message: "symlink created"})
+}
+
+// Readlink handles GET /readlink?path=<linkPath>
+func (h *Handler) Readlink(w http.ResponseWriter, r *http.Request) {
+	linkPath := r.URL.Query().Get("path")
+	if linkPath == "" {
+		writeError(w, http.StatusBadRequest, "path parameter is required")
+		return
+	}
+
+	// Check if filesystem implements Symlinker
+	symlinker, ok := h.fs.(filesystem.Symlinker)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "readlink not supported by this filesystem")
+		return
+	}
+
+	target, err := symlinker.Readlink(linkPath)
+	if err != nil {
+		status := mapErrorToStatus(err)
+		writeError(w, status, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ReadlinkResponse{Target: target})
+}
+
 // SetupRoutes sets up all HTTP routes with /api/v1 prefix
 func (h *Handler) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/health", h.Health)
@@ -700,6 +770,20 @@ func (h *Handler) SetupRoutes(mux *http.ServeMux) {
 			return
 		}
 		h.Touch(w, r)
+	})
+	mux.HandleFunc("/api/v1/symlink", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.Symlink(w, r)
+	})
+	mux.HandleFunc("/api/v1/readlink", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.Readlink(w, r)
 	})
 }
 

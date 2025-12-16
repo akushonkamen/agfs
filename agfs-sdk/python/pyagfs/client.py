@@ -365,6 +365,49 @@ class AGFSClient:
         except Exception as e:
             self._handle_request_error(e)
 
+    def symlink(self, target: str, link_path: str) -> Dict[str, Any]:
+        """Create a symbolic link
+
+        Args:
+            target: Target path (what the symlink points to)
+            link_path: Path where the symlink will be created
+
+        Returns:
+            Response with message
+        """
+        try:
+            response = self.session.post(
+                f"{self.api_base}/symlink",
+                params={"path": link_path},
+                json={"target": target},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            self._handle_request_error(e)
+
+    def readlink(self, link_path: str) -> str:
+        """Read the target of a symbolic link
+
+        Args:
+            link_path: Path to the symbolic link
+
+        Returns:
+            Target path that the symlink points to
+        """
+        try:
+            response = self.session.get(
+                f"{self.api_base}/readlink",
+                params={"path": link_path},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("target", "")
+        except Exception as e:
+            self._handle_request_error(e)
+
     def mounts(self) -> List[Dict[str, Any]]:
         """List all mounted plugins"""
         try:

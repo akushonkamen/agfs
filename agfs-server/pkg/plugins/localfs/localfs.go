@@ -536,6 +536,53 @@ func (r *localFSStreamReader) Close() error {
 	return nil
 }
 
+// Symlink creates a symbolic link at linkPath pointing to targetPath
+func (fs *LocalFS) Symlink(targetPath, linkPath string) error {
+	linkLocalPath := fs.resolvePath(linkPath)
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Check if link path already exists
+	if _, err := os.Lstat(linkLocalPath); err == nil {
+		return fmt.Errorf("file already exists: %s", linkPath)
+	}
+
+	// Check if parent directory exists
+	parentDir := filepath.Dir(linkLocalPath)
+	if _, err := os.Stat(parentDir); os.IsNotExist(err) {
+		return fmt.Errorf("parent directory does not exist: %s", filepath.Dir(linkPath))
+	}
+
+	// Create symlink
+	// Note: targetPath is kept as-is (can be relative or absolute)
+	err := os.Symlink(targetPath, linkLocalPath)
+	if err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+
+	return nil
+}
+
+// Readlink reads the target of a symbolic link
+func (fs *LocalFS) Readlink(linkPath string) (string, error) {
+	linkLocalPath := fs.resolvePath(linkPath)
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Read the symlink target
+	target, err := os.Readlink(linkLocalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no such file or directory: %s", linkPath)
+		}
+		return "", fmt.Errorf("failed to read symlink: %w", err)
+	}
+
+	return target, nil
+}
+
 // OpenStream implements the Streamer interface for streaming file reads
 func (fs *LocalFS) OpenStream(path string) (filesystem.StreamReader, error) {
 	localPath := fs.resolvePath(path)

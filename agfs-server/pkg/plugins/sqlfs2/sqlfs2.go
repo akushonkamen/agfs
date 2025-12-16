@@ -520,18 +520,18 @@ func (fs *sqlfs2FS) parsePath(path string) (dbName, tableName, sid, operation st
 		if isSessionID(parts[2]) {
 			return parts[0], parts[1], parts[2], "", nil
 		}
-		return "", "", "", "", fmt.Errorf("invalid path component: %s", parts[2])
+		return "", "", "", "", filesystem.NewNotFoundError("stat", path)
 	}
 
 	if len(parts) == 4 {
 		// Session-level file: /dbName/tableName/<sid>/operation
 		if !isSessionID(parts[2]) {
-			return "", "", "", "", fmt.Errorf("invalid session ID: %s", parts[2])
+			return "", "", "", "", filesystem.NewNotFoundError("stat", path)
 		}
 		return parts[0], parts[1], parts[2], parts[3], nil
 	}
 
-	return "", "", "", "", fmt.Errorf("invalid path: %s", path)
+	return "", "", "", "", filesystem.NewNotFoundError("stat", path)
 }
 
 // tableExists checks if a table exists in the specified database

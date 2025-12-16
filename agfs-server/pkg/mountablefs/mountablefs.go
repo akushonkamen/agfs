@@ -3,6 +3,7 @@ package mountablefs
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,6 +52,11 @@ type MountableFS struct {
 	// Value: handleInfo containing mount point and local handle ID
 	handleInfos   map[int64]*handleInfo
 	handleInfosMu sync.RWMutex
+
+	// Symlink mapping table: linkPath -> targetPath
+	// This allows symlinks to work across all filesystems without backend support
+	symlinks   map[string]string // Key: link path, Value: target path
+	symlinksMu sync.RWMutex
 }
 
 // handleInfo stores information about a handle, including its mount point and local handle
@@ -66,6 +72,7 @@ func NewMountableFS(poolConfig api.PoolConfig) *MountableFS {
 		pluginLoader:       loader.NewPluginLoader(poolConfig),
 		pluginNameCounters: make(map[string]int),
 		handleInfos:        make(map[int64]*handleInfo),
+		symlinks:           make(map[string]string),
 	}
 	mfs.mountTree.Store(iradix.New())
 	// Start global handle IDs from 1
@@ -462,7 +469,13 @@ func (mfs *MountableFS) findMount(path string) (*MountPoint, string, bool) {
 // Delegate all FileSystem methods to either base FS or mounted plugin
 
 func (mfs *MountableFS) Create(path string) error {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Create(relPath)
@@ -471,7 +484,13 @@ func (mfs *MountableFS) Create(path string) error {
 }
 
 func (mfs *MountableFS) Mkdir(path string, perm uint32) error {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Mkdir(relPath, perm)
@@ -480,7 +499,24 @@ func (mfs *MountableFS) Mkdir(path string, perm uint32) error {
 }
 
 func (mfs *MountableFS) Remove(path string) error {
-	mount, relPath, found := mfs.findMount(path)
+	// Check if it's a symlink first - remove the symlink itself, not the target
+	path = filesystem.NormalizePath(path)
+	mfs.symlinksMu.Lock()
+	if _, exists := mfs.symlinks[path]; exists {
+		delete(mfs.symlinks, path)
+		mfs.symlinksMu.Unlock()
+		log.Infof("Removed symlink: %s", path)
+		return nil
+	}
+	mfs.symlinksMu.Unlock()
+
+	// Not a symlink, resolve path components and remove
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Remove(relPath)
@@ -498,7 +534,13 @@ func (mfs *MountableFS) RemoveAll(path string) error {
 }
 
 func (mfs *MountableFS) Read(path string, offset int64, size int64) ([]byte, error) {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Read(relPath, offset, size)
@@ -507,7 +549,13 @@ func (mfs *MountableFS) Read(path string, offset int64, size int64) ([]byte, err
 }
 
 func (mfs *MountableFS) Write(path string, data []byte, offset int64, flags filesystem.WriteFlag) (int64, error) {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return 0, err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Write(relPath, data, offset, flags)
@@ -519,8 +567,14 @@ func (mfs *MountableFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 	// Lock-free implementation
 	path = filesystem.NormalizePath(path)
 
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+
 	// 1. Check if we are listing a directory inside a mount
-	mount, relPath, found := mfs.findMount(path)
+	mount, relPath, found := mfs.findMount(resolved)
 	if found {
 		// Get contents from the mounted filesystem
 		infos, err := mount.Plugin.GetFileSystem().ReadDir(relPath)
@@ -531,7 +585,7 @@ func (mfs *MountableFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 		// Also check for any nested mounts directly under this path
 		// e.g. mounted at /mnt, and we have /mnt/foo mounted
 		tree := mfs.mountTree.Load().(*iradix.Tree)
-		
+
 		// We want to find all mounts that are strictly children of `path`
 		// e.g. path="/mnt", mount="/mnt/foo" -> prefix match "/mnt/"
 		prefix := path
@@ -545,7 +599,7 @@ func (mfs *MountableFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 			// Only show direct children
 			// e.g. prefix="/mnt/", mountPath="/mnt/foo" -> OK
 			// mountPath="/mnt/foo/bar" -> SKIP (will be shown when listing /mnt/foo)
-			
+
 			rel := strings.TrimPrefix(mountPath, prefix)
 			if !strings.Contains(rel, "/") && rel != "" {
 				// Avoid duplicates if the plugin already reported it
@@ -572,6 +626,46 @@ func (mfs *MountableFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 			return false
 		})
 
+		// Add symlinks that are direct children of this path
+		mfs.symlinksMu.RLock()
+		for linkPath := range mfs.symlinks {
+			linkPath = filesystem.NormalizePath(linkPath)
+			// Check if this symlink is a direct child of the current path
+			linkDir := filesystem.NormalizePath(filepath.Dir(linkPath))
+			if linkDir == path {
+				linkName := filepath.Base(linkPath)
+				// Avoid duplicates
+				exists := false
+				for _, info := range infos {
+					if info.Name == linkName {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					// Determine if target is a directory by resolving and checking
+					isDir := false
+					resolved, err := mfs.resolvePath(linkPath)
+					if err == nil {
+						if targetStat, err := mfs.statWithoutSymlinkCheck(resolved); err == nil {
+							isDir = targetStat.IsDir
+						}
+					}
+					infos = append(infos, filesystem.FileInfo{
+						Name:    linkName,
+						Size:    0,
+						Mode:    0777, // Symlinks typically have 0777 permissions
+						ModTime: time.Now(),
+						IsDir:   isDir,
+						Meta: filesystem.MetaData{
+							Type: "symlink",
+						},
+					})
+				}
+			}
+		}
+		mfs.symlinksMu.RUnlock()
+
 		return infos, nil
 	}
 
@@ -580,7 +674,7 @@ func (mfs *MountableFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 	var infos []filesystem.FileInfo
 	seenDirs := make(map[string]bool)
 
-	prefix := path
+	prefix := resolved
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
@@ -612,8 +706,47 @@ func (mfs *MountableFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 				},
 			})
 		}
-		return false 
+		return false
 	})
+
+	// Add symlinks that are direct children of this virtual directory
+	mfs.symlinksMu.RLock()
+	for linkPath := range mfs.symlinks {
+		linkPath = filesystem.NormalizePath(linkPath)
+		linkDir := filesystem.NormalizePath(filepath.Dir(linkPath))
+		if linkDir == path {
+			linkName := filepath.Base(linkPath)
+			// Avoid duplicates
+			exists := false
+			for _, info := range infos {
+				if info.Name == linkName {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				// Determine if target is a directory by resolving and checking
+				isDir := false
+				resolved, err := mfs.resolvePath(linkPath)
+				if err == nil {
+					if targetStat, err := mfs.statWithoutSymlinkCheck(resolved); err == nil {
+						isDir = targetStat.IsDir
+					}
+				}
+				infos = append(infos, filesystem.FileInfo{
+					Name:    linkName,
+					Size:    0,
+					Mode:    0777,
+					ModTime: time.Now(),
+					IsDir:   isDir,
+					Meta: filesystem.MetaData{
+						Type: "symlink",
+					},
+				})
+			}
+		}
+	}
+	mfs.symlinksMu.RUnlock()
 
 	if len(infos) > 0 {
 		return infos, nil
@@ -639,8 +772,52 @@ func (mfs *MountableFS) Stat(path string) (*filesystem.FileInfo, error) {
 		}, nil
 	}
 
+	// Check if path is a symlink (before resolving)
+	mfs.symlinksMu.RLock()
+	targetPath, isSymlink := mfs.symlinks[path]
+	mfs.symlinksMu.RUnlock()
+
+	if isSymlink {
+		// Get name from path
+		name := filepath.Base(path)
+
+		// Try to stat the target to determine if it's a directory
+		isDir := false
+		resolved, err := mfs.resolvePath(path)
+		if err == nil {
+			if targetStat, err := mfs.statWithoutSymlinkCheck(resolved); err == nil {
+				isDir = targetStat.IsDir
+			}
+		}
+
+		return &filesystem.FileInfo{
+			Name:    name,
+			Size:    int64(len(targetPath)),
+			Mode:    0777,
+			ModTime: time.Now(),
+			IsDir:   isDir,
+			Meta: filesystem.MetaData{
+				Type: "symlink",
+			},
+		}, nil
+	}
+
+	return mfs.statWithoutSymlinkCheck(path)
+}
+
+// statWithoutSymlinkCheck performs stat without checking if path is a symlink
+// This is used internally to avoid infinite recursion
+func (mfs *MountableFS) statWithoutSymlinkCheck(path string) (*filesystem.FileInfo, error) {
+	path = filesystem.NormalizePath(path)
+
+	// Resolve symlinks in path components (but not the final component if it's a symlink)
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check if path is a mount point or within a mount
-	mount, relPath, found := mfs.findMount(path)
+	mount, relPath, found := mfs.findMount(resolved)
 	if found {
 		stat, err := mount.Plugin.GetFileSystem().Stat(relPath)
 		if err != nil {
@@ -669,7 +846,7 @@ func (mfs *MountableFS) Stat(path string) (*filesystem.FileInfo, error) {
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	
+
 	isParent := false
 	tree.Root().WalkPrefix([]byte(prefix), func(k []byte, v interface{}) bool {
 		isParent = true
@@ -715,7 +892,13 @@ func (mfs *MountableFS) Rename(oldPath, newPath string) error {
 }
 
 func (mfs *MountableFS) Chmod(path string, mode uint32) error {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Chmod(relPath, mode)
@@ -752,7 +935,13 @@ func (mfs *MountableFS) Touch(path string) error {
 }
 
 func (mfs *MountableFS) Open(path string) (io.ReadCloser, error) {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().Open(relPath)
@@ -761,7 +950,13 @@ func (mfs *MountableFS) Open(path string) (io.ReadCloser, error) {
 }
 
 func (mfs *MountableFS) OpenWrite(path string) (io.WriteCloser, error) {
-	mount, relPath, found := mfs.findMount(path)
+	// Resolve symlinks in all path components
+	resolved, err := mfs.resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	mount, relPath, found := mfs.findMount(resolved)
 
 	if found {
 		return mount.Plugin.GetFileSystem().OpenWrite(relPath)
@@ -960,6 +1155,145 @@ func (h *globalFileHandle) Stat() (*filesystem.FileInfo, error) {
 // Flags delegates to the underlying handle
 func (h *globalFileHandle) Flags() filesystem.OpenFlag {
 	return h.localHandle.Flags()
+}
+
+// resolveSymlink resolves a path if it's a symlink (non-recursively for safety)
+// Returns the resolved path and whether it was a symlink
+func (mfs *MountableFS) resolveSymlink(path string) (string, bool) {
+	path = filesystem.NormalizePath(path)
+
+	mfs.symlinksMu.RLock()
+	target, isLink := mfs.symlinks[path]
+	mfs.symlinksMu.RUnlock()
+
+	if isLink {
+		// If target is relative, resolve it relative to the link's directory
+		if !strings.HasPrefix(target, "/") {
+			linkDir := filepath.Dir(path)
+			target = filesystem.NormalizePath(filepath.Join(linkDir, target))
+		} else {
+			target = filesystem.NormalizePath(target)
+		}
+		return target, true
+	}
+
+	return path, false
+}
+
+// resolveSymlinkRecursive resolves symlinks recursively with loop detection
+// maxDepth prevents infinite loops
+func (mfs *MountableFS) resolveSymlinkRecursive(path string, maxDepth int) (string, error) {
+	if maxDepth <= 0 {
+		return "", fmt.Errorf("too many levels of symbolic links")
+	}
+
+	resolved, isLink := mfs.resolveSymlink(path)
+	if !isLink {
+		return resolved, nil
+	}
+
+	return mfs.resolveSymlinkRecursive(resolved, maxDepth-1)
+}
+
+// resolvePathWithSymlinks resolves all symlink components in a path
+// This handles cases like /a/b/c where /a or /a/b might be symlinks
+func (mfs *MountableFS) resolvePathWithSymlinks(path string, maxDepth int) (string, error) {
+	if maxDepth <= 0 {
+		return "", fmt.Errorf("too many levels of symbolic links")
+	}
+
+	path = filesystem.NormalizePath(path)
+	if path == "/" {
+		return path, nil
+	}
+
+	// Split path into components
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	currentPath := ""
+
+	for _, part := range parts {
+		// Build path incrementally
+		currentPath = currentPath + "/" + part
+		currentPath = filesystem.NormalizePath(currentPath)
+
+		// Check if current path is a symlink
+		resolved, isLink := mfs.resolveSymlink(currentPath)
+		if isLink {
+			// Recursively resolve the symlink
+			resolved, err := mfs.resolvePathWithSymlinks(resolved, maxDepth-1)
+			if err != nil {
+				return "", err
+			}
+			currentPath = resolved
+		}
+	}
+
+	return currentPath, nil
+}
+
+// resolvePath is a convenience wrapper for resolvePathWithSymlinks with default maxDepth
+func (mfs *MountableFS) resolvePath(path string) (string, error) {
+	return mfs.resolvePathWithSymlinks(path, 10)
+}
+
+// Symlink implements filesystem.Symlinker interface
+// Creates a virtual symlink at the mountablefs layer without requiring backend support
+func (mfs *MountableFS) Symlink(targetPath, linkPath string) error {
+	linkPath = filesystem.NormalizePath(linkPath)
+
+	// Check if link path already exists (as a file/directory or symlink)
+	mfs.symlinksMu.RLock()
+	_, exists := mfs.symlinks[linkPath]
+	mfs.symlinksMu.RUnlock()
+
+	if exists {
+		return filesystem.NewAlreadyExistsError("symlink", linkPath)
+	}
+
+	// Check if a real file/directory exists at linkPath
+	// We resolve symlinks for parent check but not for the link itself
+	_, err := mfs.Stat(linkPath)
+	if err == nil {
+		return filesystem.NewAlreadyExistsError("symlink", linkPath)
+	}
+
+	// Verify parent directory exists
+	parentPath := filepath.Dir(linkPath)
+	if parentPath != "/" && parentPath != "." {
+		parentResolved, err := mfs.resolvePath(parentPath)
+		if err != nil {
+			return err
+		}
+
+		_, err = mfs.Stat(parentResolved)
+		if err != nil {
+			return fmt.Errorf("parent directory does not exist: %s", parentPath)
+		}
+	}
+
+	// Store the symlink mapping
+	mfs.symlinksMu.Lock()
+	mfs.symlinks[linkPath] = targetPath
+	mfs.symlinksMu.Unlock()
+
+	log.Infof("Created symlink: %s -> %s", linkPath, targetPath)
+	return nil
+}
+
+// Readlink implements filesystem.Symlinker interface
+// Reads the target of a virtual symlink
+func (mfs *MountableFS) Readlink(linkPath string) (string, error) {
+	linkPath = filesystem.NormalizePath(linkPath)
+
+	mfs.symlinksMu.RLock()
+	target, exists := mfs.symlinks[linkPath]
+	mfs.symlinksMu.RUnlock()
+
+	if !exists {
+		return "", filesystem.NewNotFoundError("readlink", linkPath)
+	}
+
+	return target, nil
 }
 
 // Ensure MountableFS implements HandleFS interface

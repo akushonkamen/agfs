@@ -220,6 +220,40 @@ class AGFSFileSystem:
             # SDK error already includes path, don't duplicate it
             raise AGFSClientError(str(e))
 
+    def symlink(self, target: str, link_path: str) -> None:
+        """
+        Create a symbolic link
+
+        Args:
+            target: Target path (what the symlink points to)
+            link_path: Path where the symlink will be created
+
+        Raises:
+            AGFSClientError: If symlink cannot be created
+        """
+        try:
+            self.client.symlink(target, link_path)
+        except AGFSClientError as e:
+            raise AGFSClientError(str(e))
+
+    def readlink(self, link_path: str) -> str:
+        """
+        Read the target of a symbolic link
+
+        Args:
+            link_path: Path to the symbolic link
+
+        Returns:
+            Target path that the symlink points to
+
+        Raises:
+            AGFSClientError: If symlink cannot be read
+        """
+        try:
+            return self.client.readlink(link_path)
+        except AGFSClientError as e:
+            raise AGFSClientError(str(e))
+
     def get_error_message(self, error: Exception) -> str:
         """
         Get user-friendly error message

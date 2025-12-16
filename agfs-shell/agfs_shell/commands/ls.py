@@ -46,15 +46,33 @@ def cmd_ls(process: Process) -> int:
         return 1
 
     # Helper function to format file info
-    def format_file_info(file_info, display_name=None):
+    def format_file_info(file_info, display_name=None, full_path=None):
         """Format a single file info dict for output"""
         name = display_name if display_name else file_info.get('name', '')
         is_dir = file_info.get('isDir', False) or file_info.get('type') == 'directory'
         size = file_info.get('size', 0)
 
+        # Check if this is a symlink
+        meta = file_info.get('meta', {})
+        is_symlink = meta.get('Type') == 'symlink'
+
+        # Get symlink target if this is a symlink
+        symlink_target = None
+        if is_symlink and full_path:
+            try:
+                symlink_target = process.filesystem.readlink(full_path)
+            except:
+                # If readlink fails, just show as regular file
+                pass
+
         if long_format:
             # Long format output similar to ls -l
-            file_type = 'd' if is_dir else '-'
+            if is_symlink:
+                file_type = 'l'  # 'l' for symlink in ls -l
+            elif is_dir:
+                file_type = 'd'
+            else:
+                file_type = '-'
 
             # Get mode/permissions
             mode_str = file_info.get('mode', '')
@@ -66,7 +84,12 @@ def cmd_ls(process: Process) -> int:
                 perms = mode_to_rwx(mode_str)
             else:
                 # Default permissions
-                perms = 'rwxr-xr-x' if is_dir else 'rw-r--r--'
+                if is_symlink:
+                    perms = 'rwxrwxrwx'  # Symlinks typically show 777
+                elif is_dir:
+                    perms = 'rwxr-xr-x'
+                else:
+                    perms = 'rw-r--r--'
 
             # Get modification time
             mtime = file_info.get('modTime', file_info.get('mtime', ''))
@@ -82,8 +105,10 @@ def cmd_ls(process: Process) -> int:
                 mtime = '0000-00-00 00:00:00'
 
             # Format: permissions size date time name
-            # Add color for directories (blue)
-            if is_dir:
+            if is_symlink and symlink_target:
+                # Cyan color for symlinks with arrow
+                colored_name = f"\033[1;36m{name}\033[0m -> \033[1;36m{symlink_target}\033[0m"
+            elif is_dir:
                 # Blue color for directories
                 colored_name = f"\033[1;34m{name}/\033[0m"
             else:
@@ -98,7 +123,10 @@ def cmd_ls(process: Process) -> int:
             return f"{file_type}{perms} {size_str} {mtime} {colored_name}\n"
         else:
             # Simple formatting
-            if is_dir:
+            if is_symlink and symlink_target:
+                # Cyan color for symlinks with arrow
+                return f"\033[1;36m{name}\033[0m -> \033[1;36m{symlink_target}\033[0m\n"
+            elif is_dir:
                 # Blue color for directories
                 return f"\033[1;34m{name}/\033[0m\n"
             else:
@@ -123,7 +151,14 @@ def cmd_ls(process: Process) -> int:
                         process.stdout.write(f"{path}:\n".encode('utf-8'))
 
                     for file_info in files:
-                        output = format_file_info(file_info)
+                        # Construct full path for the file
+                        file_name = file_info.get('name', '')
+                        if path.endswith('/'):
+                            full_file_path = path + file_name
+                        else:
+                            full_file_path = path + '/' + file_name
+
+                        output = format_file_info(file_info, full_path=full_file_path)
                         process.stdout.write(output.encode('utf-8'))
 
                     # Add blank line between directories if multiple paths
@@ -132,7 +167,7 @@ def cmd_ls(process: Process) -> int:
                 else:
                     # It's a file - display info about the file itself
                     basename = os.path.basename(path)
-                    output = format_file_info(path_info, display_name=basename)
+                    output = format_file_info(path_info, display_name=basename, full_path=path)
                     process.stdout.write(output.encode('utf-8'))
 
             except Exception as e:

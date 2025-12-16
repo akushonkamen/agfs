@@ -135,3 +135,15 @@ type Toucher interface {
 	// Returns error if the operation fails
 	Touch(path string) error
 }
+
+// Symlinker is implemented by file systems that support symbolic links
+type Symlinker interface {
+	// Symlink creates a symbolic link at linkPath pointing to targetPath
+	// targetPath can be relative or absolute, and doesn't need to exist
+	// Returns error if the operation fails
+	Symlink(targetPath, linkPath string) error
+
+	// Readlink reads the target of a symbolic link
+	// Returns the target path and error if the operation fails
+	Readlink(linkPath string) (string, error)
+}

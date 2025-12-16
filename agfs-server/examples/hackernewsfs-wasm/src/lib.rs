@@ -30,6 +30,24 @@ struct HNItem {
     descendants: i64,
     #[serde(default)]
     time: i64,
+    #[serde(skip)]
+    url_content: RefCell<Option<String>>,
+}
+
+impl Default for HNItem {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            title: String::new(),
+            by: String::new(),
+            score: 0,
+            url: String::new(),
+            text: String::new(),
+            descendants: 0,
+            time: 0,
+            url_content: RefCell::new(None),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -102,6 +120,20 @@ impl HackerNewsFS {
             .map_err(|e| Error::Other(format!("Failed to parse story: {}", e)))
     }
 
+    fn fetch_url_content(&self, url: &str) -> Result<String> {
+        let jina_url = format!("https://r.jina.ai/{}", url);
+        eprintln!("Fetching content from: {}", jina_url);
+
+        let response = Http::get(&jina_url)?;
+
+        if !response.is_success() {
+            return Err(Error::Other(format!("HTTP {}", response.status_code)));
+        }
+
+        String::from_utf8(response.body)
+            .map_err(|e| Error::Other(format!("Failed to parse URL content: {}", e)))
+    }
+
     fn story_to_markdown(&self, index: usize, story: &HNItem) -> String {
         let url_line = if !story.url.is_empty() {
             format!("- **URL**: {}\n", story.url)
@@ -120,6 +152,17 @@ impl HackerNewsFS {
             String::new()
         };
 
+        let url_content_section = if let Some(ref content) = *story.url_content.borrow() {
+            formatdoc! {"
+
+                ## Article Content
+
+                {}
+            ", content}
+        } else {
+            String::new()
+        };
+
         formatdoc! {"
             # {}
 
@@ -130,7 +173,7 @@ impl HackerNewsFS {
             - **Comments**: {}
             - **ID**: {}
             {}- **Time**: {}
-            {}
+            {}{}
             ---
             View on HN: https://news.ycombinator.com/item?id={}
         ",
@@ -143,6 +186,7 @@ impl HackerNewsFS {
             url_line,
             story.time,
             content_section,
+            url_content_section,
             story.id
         }
     }
@@ -208,6 +252,20 @@ impl FileSystem for HackerNewsFS {
 
                 let stories = self.stories.borrow();
                 let story = &stories[index - 1];
+
+                // Lazy load URL content if not already fetched
+                if !story.url.is_empty() && story.url_content.borrow().is_none() {
+                    match self.fetch_url_content(&story.url) {
+                        Ok(content) => {
+                            *story.url_content.borrow_mut() = Some(content);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to fetch URL content for {}: {:?}", story.url, e);
+                            // Continue without URL content
+                        }
+                    }
+                }
+
                 let content = self.story_to_markdown(index - 1, story);
                 Ok(content.into_bytes())
             }

@@ -1511,10 +1511,17 @@ class Shell:
             target = args[0] if args else '/'
             resolved_path = self.resolve_path(target)
 
-            # Verify the directory exists
+            # Verify the directory exists (supports symlinks)
             try:
-                entries = self.filesystem.list_directory(resolved_path)
-                # Successfully listed - it's a valid directory
+                # Get file info to check if it's a directory (works with symlinks)
+                file_info = self.filesystem.get_file_info(resolved_path)
+                is_dir = file_info.get('isDir', False) or file_info.get('type') == 'directory'
+
+                if not is_dir:
+                    self.console.print(f"[red]cd: {target}: Not a directory[/red]", highlight=False)
+                    return 1
+
+                # It's a directory (or symlink to directory), change to it
                 self.cwd = resolved_path
                 return 0
             except Exception as e:
