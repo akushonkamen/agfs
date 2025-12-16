@@ -65,7 +65,7 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - **Comments**: `#` and `//` style comments
 
 ### Built-in Commands (42+)
-- **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, mv, stat, cp, upload, download
+- **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, mv, stat, cp, ln, upload, download
 - **Text Processing**: echo, grep, jq, wc, head, tail, tee, sort, uniq, tr, rev, cut
 - **Path Utilities**: basename, dirname
 - **Variables**: export, env, unset, local
@@ -592,13 +592,16 @@ pwd                      # /local/mydir
 ```
 
 #### ls [-l] [path]
-List directory contents.
+List directory contents. Symlinks are displayed in cyan color with arrow notation.
 
 ```bash
 ls                       # List current directory
 ls /local                # List specific directory
 ls -l                    # Long format with details
 ls -l /local/*.txt       # List with glob pattern
+
+# Symlink display example:
+# aws2 -> /s3fs/aws      # Symlinks shown with arrow and target
 ```
 
 #### tree [OPTIONS] [path]
@@ -693,6 +696,35 @@ Download files/directories from AGFS to local.
 download /local/tmp/data.json ~/Downloads/
 download -r /local/tmp/logs ~/backup/logs/
 ```
+
+#### ln [-s] target link_path
+Create symbolic links. The `-s` flag is required (hard links are not supported).
+
+```bash
+# Create a symbolic link
+ln -s /s3fs/aws /s3fs/backup
+
+# Create a symlink to a directory
+ln -s /local/data /shortcuts/mydata
+
+# Relative path symlinks
+cd /local/tmp
+ln -s ../config/app.conf local_config
+
+# Cross-mount symlinks work
+ln -s /memfs/cache /local/shortcuts/cache
+
+# Symlinks appear in ls with cyan color and arrow notation
+ls -l /shortcuts
+# mydata -> /local/data
+```
+
+**Features:**
+- Virtual symlinks at the AGFS layer (no backend support required)
+- Support for relative and absolute paths
+- Cross-mount symlinks (link across different filesystems)
+- Symlink chain resolution with cycle detection
+- Symlinks work with `cd`, `ls`, `cat`, and other file operations
 
 ### Text Processing
 

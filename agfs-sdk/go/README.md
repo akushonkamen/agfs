@@ -114,6 +114,13 @@ err := client.Chmod("/script.sh", 0755)
 
 // Delete a file
 err := client.Remove("/archive/oldfile.txt")
+
+// Create symbolic link
+err := client.Symlink("/data/original", "/shortcuts/link")
+
+// Read symbolic link target
+target, err := client.Readlink("/shortcuts/link")
+fmt.Printf("Link points to: %s\n", target)
 ```
 
 ### Directory Operations
@@ -166,6 +173,38 @@ Calculate file digests on the server side.
 resp, err := client.Digest("/iso/installer.iso", "xxh3")
 fmt.Printf("Digest: %s\n", resp.Digest)
 ```
+
+### Symbolic Links
+
+AGFS supports virtual symbolic links that work across all mounted filesystems without requiring backend support.
+
+```go
+// Create a symbolic link
+err := client.Symlink("/s3fs/bucket/data", "/shortcuts/s3data")
+if err != nil {
+    log.Fatalf("Failed to create symlink: %v", err)
+}
+
+// Read the target of a symlink
+target, err := client.Readlink("/shortcuts/s3data")
+if err != nil {
+    log.Fatalf("Failed to read symlink: %v", err)
+}
+fmt.Printf("Symlink points to: %s\n", target)
+
+// Symlinks work transparently with other operations
+data, err := client.Read("/shortcuts/s3data/file.txt", 0, -1)
+
+// Remove a symlink (does not affect the target)
+err = client.Remove("/shortcuts/s3data")
+```
+
+**Features:**
+- Virtual symlinks at the AGFS layer (no backend support required)
+- Support for relative and absolute paths
+- Cross-mount symlinks (link across different filesystems)
+- Symlink chain resolution with cycle detection
+- Transparent access through symlinks for read/write operations
 
 ## Testing
 

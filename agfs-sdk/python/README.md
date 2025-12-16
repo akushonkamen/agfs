@@ -142,6 +142,38 @@ result = client.digest("/path/to/file.txt", algorithm="xxh3")
 print(f"Hash: {result['digest']}")
 ```
 
+### Symbolic Links
+
+AGFS supports virtual symbolic links that work across all mounted filesystems without requiring backend support.
+
+```python
+# Create a symbolic link
+client.symlink("/s3fs/bucket/data", "/shortcuts/s3data")
+
+# Read the target of a symlink
+target = client.readlink("/shortcuts/s3data")
+print(f"Symlink points to: {target}")
+
+# Symlinks work transparently with other operations
+content = client.cat("/shortcuts/s3data/file.txt")
+
+# Remove a symlink (does not affect the target)
+client.rm("/shortcuts/s3data")
+
+# Create relative path symlinks
+client.symlink("../config/app.conf", "/local/tmp/local_config")
+
+# Cross-mount symlinks work
+client.symlink("/memfs/cache", "/local/shortcuts/cache")
+```
+
+**Features:**
+- Virtual symlinks at the AGFS layer (no backend support required)
+- Support for relative and absolute paths
+- Cross-mount symlinks (link across different filesystems)
+- Symlink chain resolution with cycle detection
+- Transparent access through symlinks for read/write operations
+
 ## API Reference
 
 ### AGFSClient
@@ -160,6 +192,8 @@ print(f"Hash: {result['digest']}")
 - `chmod(path, mode)` - Change file permissions
 - `touch(path)` - Update file timestamp
 - `digest(path, algorithm="xxh3")` - Calculate file hash
+- `symlink(target, link_path)` - Create symbolic link
+- `readlink(link_path)` - Read symbolic link target
 
 #### Directory Operations
 - `mkdir(path, mode="755")` - Create directory
