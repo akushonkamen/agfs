@@ -852,6 +852,9 @@ var _ filesystem.HandleFS = (*StreamFS)(nil)
 // HandleFS Implementation for StreamFS
 // ============================================================================
 
+// Maximum buffer size before trimming (1MB sliding window)
+const maxServerStreamBufferSize = 1 * 1024 * 1024
+
 // streamFileHandle represents an open handle to a stream file
 type streamFileHandle struct {
 	id     int64
@@ -864,9 +867,10 @@ type streamFileHandle struct {
 	readerID string
 	ch       <-chan []byte
 
-	// Read buffer: accumulates data from stream
+	// Read buffer: sliding window to prevent memory leak
 	readBuffer []byte
-	readOffset int64 // Current read position in buffer
+	readBase   int64 // Base offset of readBuffer[0] in the logical stream
+	readOffset int64 // Current read position in logical stream
 	readClosed bool  // Whether the read side is closed (EOF received)
 
 	mu sync.Mutex
@@ -1075,11 +1079,19 @@ func (h *streamFileHandle) drainAvailableData() {
 }
 
 // readLocked reads data (must hold mutex)
+// Uses sliding window buffer to prevent memory leak
 func (h *streamFileHandle) readLocked(buf []byte) (int, error) {
+	// Convert logical offset to relative offset in buffer
+	relOffset := h.readOffset - h.readBase
+
 	// First, return any buffered data
-	if h.readOffset < int64(len(h.readBuffer)) {
-		n := copy(buf, h.readBuffer[h.readOffset:])
+	if relOffset >= 0 && relOffset < int64(len(h.readBuffer)) {
+		n := copy(buf, h.readBuffer[relOffset:])
 		h.readOffset += int64(n)
+
+		// Trim old data if buffer is too large
+		h.trimBuffer()
+
 		return n, nil
 	}
 
@@ -1097,14 +1109,51 @@ func (h *streamFileHandle) readLocked(buf []byte) (int, error) {
 		return 0, err
 	}
 
+	// Recalculate relative offset
+	relOffset = h.readOffset - h.readBase
+
 	// Return newly fetched data
-	if h.readOffset < int64(len(h.readBuffer)) {
-		n := copy(buf, h.readBuffer[h.readOffset:])
+	if relOffset >= 0 && relOffset < int64(len(h.readBuffer)) {
+		n := copy(buf, h.readBuffer[relOffset:])
 		h.readOffset += int64(n)
+
+		// Trim old data if buffer is too large
+		h.trimBuffer()
+
 		return n, nil
 	}
 
 	return 0, nil
+}
+
+// trimBuffer removes old data from buffer to prevent memory leak
+// Must be called with mutex held
+func (h *streamFileHandle) trimBuffer() {
+	if len(h.readBuffer) <= maxServerStreamBufferSize {
+		return
+	}
+
+	// Calculate how much data has been consumed
+	consumed := h.readOffset - h.readBase
+	if consumed <= 0 {
+		return
+	}
+
+	// Keep 64KB margin for potential re-reads
+	margin := int64(64 * 1024)
+	trimPoint := consumed - margin
+	if trimPoint <= 0 {
+		return
+	}
+
+	if trimPoint > 0 && trimPoint < int64(len(h.readBuffer)) {
+		// Trim the buffer
+		newBuffer := make([]byte, int64(len(h.readBuffer))-trimPoint)
+		copy(newBuffer, h.readBuffer[trimPoint:])
+		h.readBuffer = newBuffer
+		h.readBase += trimPoint
+		log.Debugf("[streamfs] Trimmed handle buffer: new base=%d, new size=%d", h.readBase, len(h.readBuffer))
+	}
 }
 
 // fetchMoreData fetches more data from the stream channel

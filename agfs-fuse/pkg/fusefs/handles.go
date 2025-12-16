@@ -1,6 +1,7 @@
 package fusefs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -32,9 +33,12 @@ type handleInfo struct {
 	readBuffer []byte
 	// Stream reader for streaming handles
 	streamReader io.ReadCloser
-	// Buffer for stream reads (accumulates data from stream)
+	// Buffer for stream reads (sliding window to prevent memory leak)
 	streamBuffer []byte
-	streamOffset int64 // Current read position in stream buffer
+	streamBase   int64 // Base offset of streamBuffer[0] in the logical stream
+	// Context for cancelling background goroutines
+	streamCtx    context.Context
+	streamCancel context.CancelFunc
 }
 
 // HandleManager manages the mapping between FUSE handles and AGFS handles
@@ -92,6 +96,7 @@ func (hm *HandleManager) Open(path string, flags agfs.OpenFlag, mode uint32) (ui
 	if flags&agfs.OpenFlagWriteOnly == 0 {
 		streamReader, streamErr := hm.client.ReadHandleStream(agfsHandle)
 		if streamErr == nil {
+			ctx, cancel := context.WithCancel(context.Background())
 			log.Debugf("Opened stream for handle %d on %s", agfsHandle, path)
 			hm.handles[fuseHandle] = &handleInfo{
 				htype:        handleTypeRemoteStream,
@@ -100,6 +105,8 @@ func (hm *HandleManager) Open(path string, flags agfs.OpenFlag, mode uint32) (ui
 				flags:        flags,
 				mode:         mode,
 				streamReader: streamReader,
+				streamCtx:    ctx,
+				streamCancel: cancel,
 			}
 			return fuseHandle, nil
 		}
@@ -129,10 +136,18 @@ func (hm *HandleManager) Close(fuseHandle uint64) error {
 	delete(hm.handles, fuseHandle)
 	hm.mu.Unlock()
 
+	// Cancel context to stop any background goroutines
+	if info.streamCancel != nil {
+		info.streamCancel()
+	}
+
 	// Close stream reader if present
 	if info.streamReader != nil {
 		info.streamReader.Close()
 	}
+
+	// Clear buffer to release memory
+	info.streamBuffer = nil
 
 	// Remote handles: close on server
 	if info.htype == handleTypeRemote || info.htype == handleTypeRemoteStream {
@@ -228,27 +243,50 @@ func (hm *HandleManager) Read(fuseHandle uint64, offset int64, size int) ([]byte
 type streamReadResult struct {
 	n   int
 	err error
+	buf []byte
 }
+
+// Maximum buffer size before trimming (1MB sliding window)
+const maxStreamBufferSize = 1 * 1024 * 1024
 
 // readFromStream reads data from a streaming handle
 // Must be called with hm.mu held
-// Optimized for low latency: returns available data immediately without waiting to fill buffer
+// Uses sliding window buffer to prevent memory leak
 func (hm *HandleManager) readFromStream(info *handleInfo, offset int64, size int) ([]byte, error) {
+	// Convert absolute offset to relative offset in buffer
+	relOffset := offset - info.streamBase
+
 	// Fast path: if we already have data at the requested offset, return immediately
-	if offset < int64(len(info.streamBuffer)) {
-		end := offset + int64(size)
+	if relOffset >= 0 && relOffset < int64(len(info.streamBuffer)) {
+		end := relOffset + int64(size)
 		if end > int64(len(info.streamBuffer)) {
 			end = int64(len(info.streamBuffer))
 		}
-		result := make([]byte, end-offset)
-		copy(result, info.streamBuffer[offset:end])
+		result := make([]byte, end-relOffset)
+		copy(result, info.streamBuffer[relOffset:end])
+
+		// Trim old data if buffer is too large (sliding window)
+		hm.trimStreamBuffer(info, offset+int64(size))
+
 		hm.mu.Unlock()
 		return result, nil
 	}
 
+	// Check if requested offset is before our buffer (data already trimmed)
+	if relOffset < 0 {
+		hm.mu.Unlock()
+		log.Warnf("Requested offset %d is before buffer base %d (data already trimmed)", offset, info.streamBase)
+		return []byte{}, nil
+	}
+
 	// No data at offset yet, need to read from stream
-	// Only block for one read operation, then return whatever we get
 	hm.mu.Unlock()
+
+	// Use context for cancellation
+	ctx := info.streamCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	readTimeout := 5 * time.Second
 	buf := make([]byte, 64*1024) // 64KB chunks
@@ -256,23 +294,32 @@ func (hm *HandleManager) readFromStream(info *handleInfo, offset int64, size int
 
 	go func() {
 		n, err := info.streamReader.Read(buf)
-		resultCh <- streamReadResult{n: n, err: err}
+		select {
+		case resultCh <- streamReadResult{n: n, err: err, buf: buf}:
+		case <-ctx.Done():
+			// Context cancelled, goroutine exits cleanly
+		}
 	}()
 
 	var n int
 	var err error
+	var readBuf []byte
 	select {
 	case result := <-resultCh:
 		n = result.n
 		err = result.err
+		readBuf = result.buf
 	case <-time.After(readTimeout):
 		// Timeout - no data available
+		return []byte{}, nil
+	case <-ctx.Done():
+		// Handle closed
 		return []byte{}, nil
 	}
 
 	hm.mu.Lock()
 	if n > 0 {
-		info.streamBuffer = append(info.streamBuffer, buf[:n]...)
+		info.streamBuffer = append(info.streamBuffer, readBuf[:n]...)
 	}
 
 	if err != nil && err != io.EOF {
@@ -280,21 +327,59 @@ func (hm *HandleManager) readFromStream(info *handleInfo, offset int64, size int
 		return nil, fmt.Errorf("failed to read from stream: %w", err)
 	}
 
+	// Recalculate relative offset after potential buffer changes
+	relOffset = offset - info.streamBase
+
 	// Return whatever data we have at the requested offset
-	if offset >= int64(len(info.streamBuffer)) {
+	if relOffset < 0 || relOffset >= int64(len(info.streamBuffer)) {
 		hm.mu.Unlock()
 		return []byte{}, nil // EOF or no data at this offset
 	}
 
-	end := offset + int64(size)
+	end := relOffset + int64(size)
 	if end > int64(len(info.streamBuffer)) {
 		end = int64(len(info.streamBuffer))
 	}
 
-	result := make([]byte, end-offset)
-	copy(result, info.streamBuffer[offset:end])
+	result := make([]byte, end-relOffset)
+	copy(result, info.streamBuffer[relOffset:end])
+
+	// Trim old data if buffer is too large
+	hm.trimStreamBuffer(info, offset+int64(size))
+
 	hm.mu.Unlock()
 	return result, nil
+}
+
+// trimStreamBuffer removes old data from the buffer to prevent memory leak
+// Must be called with hm.mu held
+func (hm *HandleManager) trimStreamBuffer(info *handleInfo, consumedUpTo int64) {
+	if len(info.streamBuffer) <= maxStreamBufferSize {
+		return
+	}
+
+	// Keep only data after the consumed position (with some margin)
+	trimPoint := consumedUpTo - info.streamBase
+	if trimPoint <= 0 {
+		return
+	}
+
+	// Keep at least 64KB of already-read data for potential re-reads
+	margin := int64(64 * 1024)
+	if trimPoint > margin {
+		trimPoint -= margin
+	} else {
+		trimPoint = 0
+	}
+
+	if trimPoint > 0 && trimPoint < int64(len(info.streamBuffer)) {
+		// Trim the buffer
+		newBuffer := make([]byte, int64(len(info.streamBuffer))-trimPoint)
+		copy(newBuffer, info.streamBuffer[trimPoint:])
+		info.streamBuffer = newBuffer
+		info.streamBase += trimPoint
+		log.Debugf("Trimmed stream buffer: new base=%d, new size=%d", info.streamBase, len(info.streamBuffer))
+	}
 }
 
 // Write writes data to a handle
@@ -367,10 +452,16 @@ func (hm *HandleManager) CloseAll() error {
 
 	var lastErr error
 	for _, info := range handles {
+		// Cancel context to stop background goroutines
+		if info.streamCancel != nil {
+			info.streamCancel()
+		}
 		// Close stream reader if present
 		if info.streamReader != nil {
 			info.streamReader.Close()
 		}
+		// Clear buffer to release memory
+		info.streamBuffer = nil
 		if info.htype == handleTypeRemote || info.htype == handleTypeRemoteStream {
 			if err := hm.client.CloseHandle(info.agfsHandle); err != nil {
 				lastErr = err
