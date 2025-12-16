@@ -3,8 +3,10 @@ package fusefs
 import (
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	agfs "github.com/c4pt0r/agfs/agfs-sdk/go"
 	log "github.com/sirupsen/logrus"
@@ -14,8 +16,9 @@ import (
 type handleType int
 
 const (
-	handleTypeRemote handleType = iota // Server supports HandleFS
-	handleTypeLocal                    // Server doesn't support HandleFS, use local wrapper
+	handleTypeRemote       handleType = iota // Server supports HandleFS
+	handleTypeRemoteStream                   // Server supports HandleFS with streaming
+	handleTypeLocal                          // Server doesn't support HandleFS, use local wrapper
 )
 
 // handleInfo stores information about an open handle
@@ -27,6 +30,11 @@ type handleInfo struct {
 	mode       uint32
 	// Read buffer for local handles - caches first read to avoid multiple server requests
 	readBuffer []byte
+	// Stream reader for streaming handles
+	streamReader io.ReadCloser
+	// Buffer for stream reads (accumulates data from stream)
+	streamBuffer []byte
+	streamOffset int64 // Current read position in stream buffer
 }
 
 // HandleManager manages the mapping between FUSE handles and AGFS handles
@@ -80,7 +88,25 @@ func (hm *HandleManager) Open(path string, flags agfs.OpenFlag, mode uint32) (ui
 
 	log.Debugf("Opened remote handle for %s (handle=%d)", path, agfsHandle)
 
-	// Server supports HandleFS
+	// Try to open streaming connection for read handles
+	if flags&agfs.OpenFlagWriteOnly == 0 {
+		streamReader, streamErr := hm.client.ReadHandleStream(agfsHandle)
+		if streamErr == nil {
+			log.Debugf("Opened stream for handle %d on %s", agfsHandle, path)
+			hm.handles[fuseHandle] = &handleInfo{
+				htype:        handleTypeRemoteStream,
+				agfsHandle:   agfsHandle,
+				path:         path,
+				flags:        flags,
+				mode:         mode,
+				streamReader: streamReader,
+			}
+			return fuseHandle, nil
+		}
+		log.Debugf("Failed to open stream for %s, using regular handle: %v", path, streamErr)
+	}
+
+	// Server supports HandleFS but not streaming (or write handle)
 	hm.handles[fuseHandle] = &handleInfo{
 		htype:      handleTypeRemote,
 		agfsHandle: agfsHandle,
@@ -103,8 +129,13 @@ func (hm *HandleManager) Close(fuseHandle uint64) error {
 	delete(hm.handles, fuseHandle)
 	hm.mu.Unlock()
 
+	// Close stream reader if present
+	if info.streamReader != nil {
+		info.streamReader.Close()
+	}
+
 	// Remote handles: close on server
-	if info.htype == handleTypeRemote {
+	if info.htype == handleTypeRemote || info.htype == handleTypeRemoteStream {
 		if err := hm.client.CloseHandle(info.agfsHandle); err != nil {
 			return fmt.Errorf("failed to close handle: %w", err)
 		}
@@ -122,6 +153,11 @@ func (hm *HandleManager) Read(fuseHandle uint64, offset int64, size int) ([]byte
 	if !ok {
 		hm.mu.Unlock()
 		return nil, fmt.Errorf("handle %d not found", fuseHandle)
+	}
+
+	// Streaming handle: read from stream
+	if info.htype == handleTypeRemoteStream && info.streamReader != nil {
+		return hm.readFromStream(info, offset, size)
 	}
 
 	if info.htype == handleTypeRemote {
@@ -186,6 +222,79 @@ func (hm *HandleManager) Read(fuseHandle uint64, offset int64, size int) ([]byte
 	// No cached data and offset > 0, return empty
 	hm.mu.Unlock()
 	return []byte{}, nil
+}
+
+// streamReadResult holds the result of a stream read operation
+type streamReadResult struct {
+	n   int
+	err error
+}
+
+// readFromStream reads data from a streaming handle
+// Must be called with hm.mu held
+// Optimized for low latency: returns available data immediately without waiting to fill buffer
+func (hm *HandleManager) readFromStream(info *handleInfo, offset int64, size int) ([]byte, error) {
+	// Fast path: if we already have data at the requested offset, return immediately
+	if offset < int64(len(info.streamBuffer)) {
+		end := offset + int64(size)
+		if end > int64(len(info.streamBuffer)) {
+			end = int64(len(info.streamBuffer))
+		}
+		result := make([]byte, end-offset)
+		copy(result, info.streamBuffer[offset:end])
+		hm.mu.Unlock()
+		return result, nil
+	}
+
+	// No data at offset yet, need to read from stream
+	// Only block for one read operation, then return whatever we get
+	hm.mu.Unlock()
+
+	readTimeout := 5 * time.Second
+	buf := make([]byte, 64*1024) // 64KB chunks
+	resultCh := make(chan streamReadResult, 1)
+
+	go func() {
+		n, err := info.streamReader.Read(buf)
+		resultCh <- streamReadResult{n: n, err: err}
+	}()
+
+	var n int
+	var err error
+	select {
+	case result := <-resultCh:
+		n = result.n
+		err = result.err
+	case <-time.After(readTimeout):
+		// Timeout - no data available
+		return []byte{}, nil
+	}
+
+	hm.mu.Lock()
+	if n > 0 {
+		info.streamBuffer = append(info.streamBuffer, buf[:n]...)
+	}
+
+	if err != nil && err != io.EOF {
+		hm.mu.Unlock()
+		return nil, fmt.Errorf("failed to read from stream: %w", err)
+	}
+
+	// Return whatever data we have at the requested offset
+	if offset >= int64(len(info.streamBuffer)) {
+		hm.mu.Unlock()
+		return []byte{}, nil // EOF or no data at this offset
+	}
+
+	end := offset + int64(size)
+	if end > int64(len(info.streamBuffer)) {
+		end = int64(len(info.streamBuffer))
+	}
+
+	result := make([]byte, end-offset)
+	copy(result, info.streamBuffer[offset:end])
+	hm.mu.Unlock()
+	return result, nil
 }
 
 // Write writes data to a handle
@@ -258,7 +367,11 @@ func (hm *HandleManager) CloseAll() error {
 
 	var lastErr error
 	for _, info := range handles {
-		if info.htype == handleTypeRemote {
+		// Close stream reader if present
+		if info.streamReader != nil {
+			info.streamReader.Close()
+		}
+		if info.htype == handleTypeRemote || info.htype == handleTypeRemoteStream {
 			if err := hm.client.CloseHandle(info.agfsHandle); err != nil {
 				lastErr = err
 			}

@@ -462,6 +462,77 @@ func (h *Handler) HandleStat(w http.ResponseWriter, r *http.Request, handleIDStr
 	writeJSON(w, http.StatusOK, response)
 }
 
+// HandleStream handles GET /api/v1/handles/<id>/stream - streaming read
+// Uses chunked transfer encoding for continuous data streaming
+func (h *Handler) HandleStream(w http.ResponseWriter, r *http.Request, handleIDStr string) {
+	handleFS, err := h.getHandleFS()
+	if err != nil {
+		writeError(w, http.StatusNotImplemented, err.Error())
+		return
+	}
+
+	handleID, err := strconv.ParseInt(handleIDStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid handle ID: must be a number")
+		return
+	}
+
+	handle, err := handleFS.GetHandle(handleID)
+	if err != nil {
+		status := mapErrorToStatus(err)
+		writeError(w, status, err.Error())
+		return
+	}
+
+	// Set headers for streaming
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+
+	// Get flusher for streaming
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	// Read and stream data
+	buf := make([]byte, 64*1024) // 64KB buffer
+	for {
+		n, err := handle.Read(buf)
+		if n > 0 {
+			_, writeErr := w.Write(buf[:n])
+			if writeErr != nil {
+				// Client disconnected
+				return
+			}
+			flusher.Flush()
+
+			// Record traffic
+			if h.trafficMonitor != nil {
+				h.trafficMonitor.RecordRead(int64(n))
+			}
+		}
+
+		if err == io.EOF {
+			// Stream ended
+			return
+		}
+		if err != nil {
+			// Error reading - just return, client will see connection close
+			return
+		}
+
+		// Check if client disconnected
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+	}
+}
+
 // SetupHandleRoutes sets up routes for file handle operations
 func (h *Handler) SetupHandleRoutes(mux *http.ServeMux) {
 	// POST /api/v1/handles/open - Open a new handle
@@ -543,6 +614,12 @@ func (h *Handler) SetupHandleRoutes(mux *http.ServeMux) {
 				return
 			}
 			h.HandleStat(w, r, handleID)
+		case "stream":
+			if r.Method != http.MethodGet {
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			h.HandleStream(w, r, handleID)
 		default:
 			writeError(w, http.StatusNotFound, "unknown operation: "+operation)
 		}

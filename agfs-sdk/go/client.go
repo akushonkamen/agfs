@@ -737,6 +737,40 @@ func (c *Client) ReadHandle(handleID int64, offset int64, size int) ([]byte, err
 	return data, nil
 }
 
+// ReadHandleStream opens a streaming connection to read from a file handle
+// Returns an io.ReadCloser that streams data from the server
+// The caller is responsible for closing the reader
+func (c *Client) ReadHandleStream(handleID int64) (io.ReadCloser, error) {
+	endpoint := fmt.Sprintf("/handles/%d/stream", handleID)
+
+	// Create request with no timeout for streaming
+	streamClient := &http.Client{
+		Timeout: 0, // No timeout for streaming
+	}
+
+	reqURL := fmt.Sprintf("%s%s", c.baseURL, endpoint)
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		var errResp ErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+			return nil, fmt.Errorf("HTTP %d: failed to decode error response", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, errResp.Error)
+	}
+
+	return resp.Body, nil
+}
+
 // WriteHandle writes data to a file handle
 func (c *Client) WriteHandle(handleID int64, data []byte, offset int64) (int, error) {
 	endpoint := fmt.Sprintf("/handles/%d/write", handleID)

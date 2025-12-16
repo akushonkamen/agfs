@@ -2,6 +2,7 @@ package fusefs
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"syscall"
 	"time"
@@ -33,7 +34,11 @@ type Config struct {
 
 // NewAGFSFS creates a new AGFS FUSE filesystem
 func NewAGFSFS(config Config) *AGFSFS {
-	client := agfs.NewClient(config.ServerURL)
+	// Use longer timeout for FUSE operations (streams may block)
+	httpClient := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+	client := agfs.NewClientWithHTTPClient(config.ServerURL, httpClient)
 
 	return &AGFSFS{
 		client:    client,

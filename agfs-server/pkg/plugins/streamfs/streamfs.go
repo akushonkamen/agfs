@@ -845,3 +845,356 @@ ARCHITECTURE DETAILS:
 
 // Ensure StreamFSPlugin implements ServicePlugin
 var _ plugin.ServicePlugin = (*StreamFSPlugin)(nil)
+var _ filesystem.FileSystem = (*StreamFS)(nil)
+var _ filesystem.HandleFS = (*StreamFS)(nil)
+
+// ============================================================================
+// HandleFS Implementation for StreamFS
+// ============================================================================
+
+// streamFileHandle represents an open handle to a stream file
+type streamFileHandle struct {
+	id     int64
+	sfs    *StreamFS
+	path   string
+	flags  filesystem.OpenFlag
+	stream *StreamFile
+
+	// For reading: registered reader info
+	readerID string
+	ch       <-chan []byte
+
+	// Read buffer: accumulates data from stream
+	readBuffer []byte
+	readOffset int64 // Current read position in buffer
+	readClosed bool  // Whether the read side is closed (EOF received)
+
+	mu sync.Mutex
+}
+
+// streamHandleManager manages open handles for StreamFS
+type streamHandleManager struct {
+	handles map[int64]*streamFileHandle
+	nextID  int64
+	mu      sync.Mutex
+}
+
+// Global handle manager for StreamFS
+var sfsHandleManager = &streamHandleManager{
+	handles: make(map[int64]*streamFileHandle),
+	nextID:  1,
+}
+
+// OpenHandle opens a file and returns a handle for stateful operations
+func (sfs *StreamFS) OpenHandle(path string, flags filesystem.OpenFlag, mode uint32) (filesystem.FileHandle, error) {
+	// README file - use simple read
+	if path == "/README" {
+		sfsHandleManager.mu.Lock()
+		defer sfsHandleManager.mu.Unlock()
+
+		id := sfsHandleManager.nextID
+		sfsHandleManager.nextID++
+
+		handle := &streamFileHandle{
+			id:         id,
+			sfs:        sfs,
+			path:       path,
+			flags:      flags,
+			readBuffer: []byte(getReadme()),
+			readClosed: true, // README is static, no more data
+		}
+
+		sfsHandleManager.handles[id] = handle
+		log.Debugf("[streamfs] Opened README handle %d", id)
+		return handle, nil
+	}
+
+	// Get or create stream
+	sfs.mu.Lock()
+	stream, exists := sfs.streams[path]
+	if !exists {
+		// Auto-create stream if it doesn't exist
+		stream = NewStreamFile(path, sfs.channelBuffer, sfs.ringSize)
+		sfs.streams[path] = stream
+		log.Infof("[streamfs] Auto-created stream %s for handle", path)
+	}
+	sfs.mu.Unlock()
+
+	sfsHandleManager.mu.Lock()
+	defer sfsHandleManager.mu.Unlock()
+
+	id := sfsHandleManager.nextID
+	sfsHandleManager.nextID++
+
+	handle := &streamFileHandle{
+		id:     id,
+		sfs:    sfs,
+		path:   path,
+		flags:  flags,
+		stream: stream,
+	}
+
+	// If opening for read, register as a reader
+	if flags&filesystem.O_WRONLY == 0 {
+		readerID, ch := stream.RegisterReader()
+		handle.readerID = readerID
+		handle.ch = ch
+		log.Infof("[streamfs] Opened read handle %d for %s (reader: %s)", id, path, readerID)
+	} else {
+		log.Infof("[streamfs] Opened write handle %d for %s", id, path)
+	}
+
+	sfsHandleManager.handles[id] = handle
+	return handle, nil
+}
+
+// GetHandle retrieves an existing handle by its ID
+func (sfs *StreamFS) GetHandle(id int64) (filesystem.FileHandle, error) {
+	sfsHandleManager.mu.Lock()
+	defer sfsHandleManager.mu.Unlock()
+
+	handle, ok := sfsHandleManager.handles[id]
+	if !ok {
+		return nil, filesystem.ErrNotFound
+	}
+	return handle, nil
+}
+
+// CloseHandle closes a handle by its ID
+func (sfs *StreamFS) CloseHandle(id int64) error {
+	sfsHandleManager.mu.Lock()
+	handle, ok := sfsHandleManager.handles[id]
+	if !ok {
+		sfsHandleManager.mu.Unlock()
+		return filesystem.ErrNotFound
+	}
+	delete(sfsHandleManager.handles, id)
+	sfsHandleManager.mu.Unlock()
+
+	// Unregister reader if this was a read handle
+	if handle.readerID != "" && handle.stream != nil {
+		handle.stream.UnregisterReader(handle.readerID)
+		log.Infof("[streamfs] Closed handle %d, unregistered reader %s", id, handle.readerID)
+	}
+
+	return nil
+}
+
+// ============================================================================
+// FileHandle Implementation
+// ============================================================================
+
+func (h *streamFileHandle) ID() int64 {
+	return h.id
+}
+
+func (h *streamFileHandle) Path() string {
+	return h.path
+}
+
+func (h *streamFileHandle) Flags() filesystem.OpenFlag {
+	return h.flags
+}
+
+func (h *streamFileHandle) Read(buf []byte) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.readLocked(buf)
+}
+
+func (h *streamFileHandle) ReadAt(buf []byte, offset int64) (int, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// First, try to collect all available data without blocking
+	h.drainAvailableData()
+
+	// If we already have enough data for this request, return it
+	if offset < int64(len(h.readBuffer)) {
+		end := offset + int64(len(buf))
+		if end > int64(len(h.readBuffer)) {
+			end = int64(len(h.readBuffer))
+		}
+		n := copy(buf, h.readBuffer[offset:end])
+
+		// If stream is closed and we've returned all data
+		if h.readClosed && end >= int64(len(h.readBuffer)) && n < len(buf) {
+			return n, io.EOF
+		}
+		return n, nil
+	}
+
+	// No data at requested offset yet
+	if h.readClosed {
+		return 0, io.EOF
+	}
+
+	// Wait for more data (with timeout)
+	if err := h.fetchMoreData(); err != nil {
+		if err == io.EOF {
+			h.readClosed = true
+			return 0, io.EOF
+		}
+		return 0, err
+	}
+
+	// Try again after fetching
+	if offset < int64(len(h.readBuffer)) {
+		end := offset + int64(len(buf))
+		if end > int64(len(h.readBuffer)) {
+			end = int64(len(h.readBuffer))
+		}
+		n := copy(buf, h.readBuffer[offset:end])
+		return n, nil
+	}
+
+	// Still no data - return 0 bytes (FUSE will retry)
+	return 0, nil
+}
+
+// drainAvailableData collects all immediately available data from channel
+func (h *streamFileHandle) drainAvailableData() {
+	if h.ch == nil {
+		return
+	}
+
+	for {
+		select {
+		case data, ok := <-h.ch:
+			if !ok {
+				h.readClosed = true
+				return
+			}
+			h.readBuffer = append(h.readBuffer, data...)
+		default:
+			// No more data immediately available
+			return
+		}
+	}
+}
+
+// readLocked reads data (must hold mutex)
+func (h *streamFileHandle) readLocked(buf []byte) (int, error) {
+	// First, return any buffered data
+	if h.readOffset < int64(len(h.readBuffer)) {
+		n := copy(buf, h.readBuffer[h.readOffset:])
+		h.readOffset += int64(n)
+		return n, nil
+	}
+
+	// If stream is closed, return EOF
+	if h.readClosed {
+		return 0, io.EOF
+	}
+
+	// Fetch more data from stream
+	if err := h.fetchMoreData(); err != nil {
+		if err == io.EOF {
+			h.readClosed = true
+			return 0, io.EOF
+		}
+		return 0, err
+	}
+
+	// Return newly fetched data
+	if h.readOffset < int64(len(h.readBuffer)) {
+		n := copy(buf, h.readBuffer[h.readOffset:])
+		h.readOffset += int64(n)
+		return n, nil
+	}
+
+	return 0, nil
+}
+
+// fetchMoreData fetches more data from the stream channel
+// Uses timeout to avoid HTTP request timeout (FUSE client has 60s timeout)
+func (h *streamFileHandle) fetchMoreData() error {
+	if h.ch == nil {
+		return io.EOF
+	}
+
+	// Use 30 second timeout to stay within HTTP timeout limit
+	// Long enough for streams, short enough to avoid HTTP timeout
+	select {
+	case data, ok := <-h.ch:
+		if !ok {
+			return io.EOF
+		}
+		h.readBuffer = append(h.readBuffer, data...)
+		return nil
+	case <-time.After(30 * time.Second):
+		// Timeout - return what we have, don't error
+		// The caller will return buffered data or retry
+		return nil
+	}
+}
+
+func (h *streamFileHandle) Write(data []byte) (int, error) {
+	return h.WriteAt(data, 0)
+}
+
+func (h *streamFileHandle) WriteAt(data []byte, offset int64) (int, error) {
+	if h.stream == nil {
+		return 0, fmt.Errorf("stream not initialized")
+	}
+
+	// StreamFS is append-only, offset is ignored
+	err := h.stream.Write(data)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(data), nil
+}
+
+func (h *streamFileHandle) Seek(offset int64, whence int) (int64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var newOffset int64
+	switch whence {
+	case io.SeekStart:
+		newOffset = offset
+	case io.SeekCurrent:
+		newOffset = h.readOffset + offset
+	case io.SeekEnd:
+		// For streams, end is the current buffer length
+		newOffset = int64(len(h.readBuffer)) + offset
+	default:
+		return 0, fmt.Errorf("invalid whence: %d", whence)
+	}
+
+	if newOffset < 0 {
+		return 0, fmt.Errorf("negative offset")
+	}
+
+	h.readOffset = newOffset
+	return newOffset, nil
+}
+
+func (h *streamFileHandle) Sync() error {
+	// Nothing to sync for streams
+	return nil
+}
+
+func (h *streamFileHandle) Close() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	sfsHandleManager.mu.Lock()
+	delete(sfsHandleManager.handles, h.id)
+	sfsHandleManager.mu.Unlock()
+
+	// Unregister reader
+	if h.readerID != "" && h.stream != nil {
+		h.stream.UnregisterReader(h.readerID)
+		log.Infof("[streamfs] Handle %d closed, unregistered reader %s", h.id, h.readerID)
+	}
+
+	return nil
+}
+
+func (h *streamFileHandle) Stat() (*filesystem.FileInfo, error) {
+	return h.sfs.Stat(h.path)
+}
