@@ -31,6 +31,7 @@ An experimental shell implementation with Unix-style pipeline support and **AGFS
   - [AI Integration](#ai-integration)
 - [Script Files](#script-files)
 - [Interactive Features](#interactive-features)
+- [Startup Scripts (initrc)](#startup-scripts-initrc)
 - [Complex Examples](#complex-examples)
 - [Architecture](#architecture)
 - [Testing](#testing)
@@ -1422,6 +1423,87 @@ agfs:/> if [ -f /local/tmp/file.txt ]; then
 - **Ctrl-L**: Clear screen
 - **Ctrl-D**: Exit shell (when line empty)
 - **Ctrl-C**: Cancel current input
+
+## Startup Scripts (initrc)
+
+When agfs-shell starts, it automatically checks for and executes initialization scripts from the AGFS filesystem. This allows you to set up environment variables, define functions, aliases, and perform other initialization tasks.
+
+### Initialization File Locations
+
+The following files are checked in order. If a file exists, it is executed as an agfs-shell script:
+
+1. `/etc/rc`
+2. `/etc/initrc`
+3. `/initrc.as`
+4. `/etc/profile`
+5. `/etc/profile.as`
+
+All paths are in the AGFS filesystem, not the local filesystem.
+
+### Example initrc File
+
+Create an initialization script in AGFS:
+
+```bash
+# /etc/profile.as - System-wide initialization script
+
+# Set custom environment variables
+export BACKUP_DIR=/local/tmp/backups
+export DATA_DIR=/local/tmp/data
+
+# Define utility functions
+greet() {
+    echo "Hello, $1! Welcome to AGFS Shell."
+}
+
+backup() {
+    local src=$1
+    local timestamp=$(date "+%Y%m%d_%H%M%S")
+    cp $src ${src}.backup_${timestamp}
+    echo "Backed up $src"
+}
+
+# Define aliases using functions
+ll() {
+    ls -l $@
+}
+
+la() {
+    ls -a $@
+}
+
+# Display welcome message
+echo "AGFS Shell initialized at $(date)"
+echo "Type 'help' for available commands"
+```
+
+### Behavior
+
+- Scripts are executed in order; later scripts can override earlier definitions
+- Errors in initrc scripts are reported as warnings but do not prevent shell startup
+- Functions and variables defined in initrc are available in the shell session
+- initrc is executed for all modes: interactive REPL, script execution, and `-c` command mode
+- initrc is NOT executed in webapp mode
+
+### Creating initrc Files
+
+```bash
+# Create /etc directory if needed
+mkdir /etc
+
+# Create profile script
+cat << 'EOF' > /etc/profile.as
+# My AGFS Shell profile
+export MY_VAR="hello"
+
+myhelper() {
+    echo "Custom helper function"
+}
+EOF
+
+# Verify it exists
+cat /etc/profile.as
+```
 
 ## Complex Examples
 
