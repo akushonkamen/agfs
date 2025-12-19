@@ -1,6 +1,7 @@
 # agfs-shell
 
 An experimental shell implementation with Unix-style pipeline support and **AGFS integration**, written in pure Python.
+agfs-shell provides a lightweight interpreter with bash-like syntax, enabling script development.
 
 ## Table of Contents
 
