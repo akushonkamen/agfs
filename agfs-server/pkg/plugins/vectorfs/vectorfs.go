@@ -581,24 +581,65 @@ func (vfs *vectorFS) ReadDir(path string) ([]filesystem.FileInfo, error) {
 		}, nil
 	}
 
-	// docs/ directory
-	if relativePath == "docs" {
+	// docs/ directory or subdirectory under docs/
+	if relativePath == "docs" || strings.HasPrefix(relativePath, "docs/") {
 		// List files in this namespace
 		files, err := vfs.plugin.tidbClient.ListFiles(namespace)
 		if err != nil {
 			return nil, err
 		}
 
+		// Determine the subdirectory prefix we're listing
+		// relativePath: "docs" -> subPrefix: ""
+		// relativePath: "docs/subdir" -> subPrefix: "subdir/"
+		var subPrefix string
+		if relativePath != "docs" {
+			subPrefix = strings.TrimPrefix(relativePath, "docs/") + "/"
+		}
+
+		// Track unique entries at this level
+		seenDirs := make(map[string]bool)
 		var fileInfos []filesystem.FileInfo
+
 		for _, f := range files {
-			fileInfos = append(fileInfos, filesystem.FileInfo{
-				Name:    f.FileName,
-				Size:    f.FileSize,
-				Mode:    0644,
-				ModTime: f.UpdatedAt,
-				IsDir:   false,
-				Meta:    filesystem.MetaData{Name: PluginName, Type: "document"},
-			})
+			fileName := f.FileName
+
+			// Check if this file belongs to the current directory level
+			if subPrefix != "" {
+				// We're in a subdirectory, only include files under this prefix
+				if !strings.HasPrefix(fileName, subPrefix) {
+					continue
+				}
+				// Remove the prefix to get relative path
+				fileName = strings.TrimPrefix(fileName, subPrefix)
+			}
+
+			// Check if there's a "/" in the remaining path (meaning it's in a subdirectory)
+			if idx := strings.Index(fileName, "/"); idx != -1 {
+				// This file is in a subdirectory, extract directory name
+				dirName := fileName[:idx]
+				if !seenDirs[dirName] {
+					seenDirs[dirName] = true
+					fileInfos = append(fileInfos, filesystem.FileInfo{
+						Name:    dirName,
+						Size:    0,
+						Mode:    0755,
+						ModTime: now,
+						IsDir:   true,
+						Meta:    filesystem.MetaData{Name: PluginName, Type: "directory"},
+					})
+				}
+			} else {
+				// This is a file at the current level
+				fileInfos = append(fileInfos, filesystem.FileInfo{
+					Name:    fileName,
+					Size:    f.FileSize,
+					Mode:    0644,
+					ModTime: f.UpdatedAt,
+					IsDir:   false,
+					Meta:    filesystem.MetaData{Name: PluginName, Type: "document"},
+				})
+			}
 		}
 
 		return fileInfos, nil
@@ -675,6 +716,51 @@ func (vfs *vectorFS) Stat(path string) (*filesystem.FileInfo, error) {
 			IsDir:   false,
 			Meta:    filesystem.MetaData{Name: PluginName, Type: "status"},
 		}, nil
+	}
+
+	// Handle files and subdirectories under docs/
+	if strings.HasPrefix(relativePath, "docs/") {
+		fileName := strings.TrimPrefix(relativePath, "docs/")
+		if fileName == "" {
+			return nil, filesystem.ErrNotFound
+		}
+
+		// First, try to get exact file match
+		meta, err := vfs.plugin.tidbClient.GetFileMetadataByName(namespace, fileName)
+		if err == nil {
+			// File exists
+			return &filesystem.FileInfo{
+				Name:    filepath.Base(fileName),
+				Size:    meta.FileSize,
+				Mode:    0644,
+				ModTime: meta.UpdatedAt,
+				IsDir:   false,
+				Meta:    filesystem.MetaData{Name: PluginName, Type: "document"},
+			}, nil
+		}
+
+		// Check if this is a virtual directory (any file has this prefix)
+		files, err := vfs.plugin.tidbClient.ListFiles(namespace)
+		if err != nil {
+			return nil, err
+		}
+
+		dirPrefix := fileName + "/"
+		for _, f := range files {
+			if strings.HasPrefix(f.FileName, dirPrefix) {
+				// This is a virtual directory
+				return &filesystem.FileInfo{
+					Name:    filepath.Base(fileName),
+					Size:    0,
+					Mode:    0755,
+					ModTime: time.Now(),
+					IsDir:   true,
+					Meta:    filesystem.MetaData{Name: PluginName, Type: "directory"},
+				}, nil
+			}
+		}
+
+		return nil, filesystem.ErrNotFound
 	}
 
 	return nil, filesystem.ErrNotFound
