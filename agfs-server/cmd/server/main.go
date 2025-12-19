@@ -28,6 +28,7 @@ import (
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/sqlfs2"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/streamfs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/streamrotatefs"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/vectorfs"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -58,6 +59,7 @@ var availablePlugins = map[string]PluginFactory{
 	"sqlfs2":         func() plugin.ServicePlugin { return sqlfs2.NewSQLFS2Plugin() },
 	"localfs":        func() plugin.ServicePlugin { return localfs.NewLocalFSPlugin() },
 	"gptfs":          func() plugin.ServicePlugin { return gptfs.NewGptfs() },
+	"vectorfs":       func() plugin.ServicePlugin { return vectorfs.NewVectorFSPlugin() },
 }
 
 const sampleConfig = `# AGFS Server Configuration File

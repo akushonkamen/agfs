@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/c4pt0r/agfs/agfs-server/pkg/filesystem"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/mountablefs"
 	log "github.com/sirupsen/logrus"
 	"github.com/zeebo/xxh3"
 )
@@ -733,12 +735,91 @@ func (h *Handler) Truncate(w http.ResponseWriter, r *http.Request) {
 // SetupRoutes sets up all HTTP routes with /api/v1 prefix
 func (h *Handler) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/health", h.Health)
+	mux.HandleFunc("/api/v1/version", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"version":   h.version,
+			"gitCommit": h.gitCommit,
+			"buildTime": h.buildTime,
+		})
+	})
 	mux.HandleFunc("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		h.Capabilities(w, r)
+	})
+
+	// Convenience routes (aliases for common operations)
+	mux.HandleFunc("/api/v1/mkdir", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.CreateDirectory(w, r)
+	})
+	mux.HandleFunc("/api/v1/write", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// Check if request has JSON content type
+		contentType := r.Header.Get("Content-Type")
+		if strings.Contains(contentType, "application/json") {
+			// Parse JSON body
+			var req struct {
+				Data string `json:"data"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON body")
+				return
+			}
+			// Get path from query parameter
+			path := r.URL.Query().Get("path")
+			if path == "" {
+				writeError(w, http.StatusBadRequest, "path parameter is required")
+				return
+			}
+			// Write data
+			data := []byte(req.Data)
+			if h.trafficMonitor != nil && len(data) > 0 {
+				h.trafficMonitor.RecordWrite(int64(len(data)))
+			}
+			bytesWritten, err := h.fs.Write(path, data, -1, filesystem.WriteFlagCreate|filesystem.WriteFlagTruncate)
+			if err != nil {
+				status := mapErrorToStatus(err)
+				writeError(w, status, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Message: fmt.Sprintf("Written %d bytes", bytesWritten)})
+		} else {
+			// Use default WriteFile for raw body
+			h.WriteFile(w, r)
+		}
+	})
+	mux.HandleFunc("/api/v1/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.ListDirectory(w, r)
+	})
+
+	// Root handler
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"service": "AGFS Server",
+			"version": h.version,
+			"status":  "running",
+		})
 	})
 
 	// Setup handle routes (file handles for stateful operations)
@@ -950,9 +1031,10 @@ type GrepRequest struct {
 
 // GrepMatch represents a single match result
 type GrepMatch struct {
-	File    string `json:"file"`    // File path
-	Line    int    `json:"line"`    // Line number (1-indexed)
-	Content string `json:"content"` // Matched line content
+	File     string                 `json:"file"`              // File path
+	Line     int                    `json:"line"`              // Line number (1-indexed)
+	Content  string                 `json:"content"`           // Matched line content
+	Metadata map[string]interface{} `json:"metadata,omitempty"` // Optional metadata (e.g., score, distance for vector search)
 }
 
 // GrepResponse represents the grep search results
@@ -979,7 +1061,37 @@ func (h *Handler) Grep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compile regex pattern
+	// Try custom grep first (if filesystem supports it)
+	// This allows plugins like vectorfs to implement their own search logic
+	if cg, ok := h.fs.(interface {
+		CustomGrep(string, string) ([]mountablefs.CustomGrepResult, error)
+	}); ok {
+		// Attempt custom grep (e.g., vector search)
+		customResults, err := cg.CustomGrep(req.Path, req.Pattern)
+		if err == nil && len(customResults) > 0 {
+			// Convert custom results to GrepMatch format
+			var matches []GrepMatch
+			for _, result := range customResults {
+				match := GrepMatch{
+					File:     result.File,
+					Line:     result.Line,
+					Content:  result.Content,
+					Metadata: result.Metadata, // Include metadata (score, distance, etc.)
+				}
+				matches = append(matches, match)
+			}
+
+			response := GrepResponse{
+				Matches: matches,
+				Count:   len(matches),
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
+		// If custom grep fails or returns no results, fall through to text grep
+	}
+
+	// Compile regex pattern for text grep
 	var re *regexp.Regexp
 	var err error
 	if req.CaseInsensitive {
