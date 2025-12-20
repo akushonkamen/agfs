@@ -1013,6 +1013,7 @@ type queueFileHandle struct {
 	// For dequeue/peek: cached message data (read once, return from cache)
 	readBuffer []byte
 	readDone   bool
+	readPos    int64 // Current position for sequential Read() calls
 
 	mu sync.Mutex
 }
@@ -1113,7 +1114,44 @@ func (h *queueFileHandle) Flags() filesystem.OpenFlag {
 }
 
 func (h *queueFileHandle) Read(buf []byte) (int, error) {
-	return h.ReadAt(buf, 0)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// For dequeue/peek: fetch data once and cache it
+	if !h.readDone {
+		var data []byte
+		var err error
+
+		switch h.operation {
+		case "dequeue":
+			data, err = h.qfs.dequeue(h.queueName)
+		case "peek":
+			data, err = h.qfs.peek(h.queueName)
+		case "size":
+			data, err = h.qfs.size(h.queueName)
+		case "enqueue", "clear":
+			// These are write-only operations
+			return 0, io.EOF
+		default:
+			return 0, fmt.Errorf("unsupported read operation: %s", h.operation)
+		}
+
+		if err != nil {
+			return 0, err
+		}
+
+		h.readBuffer = data
+		h.readDone = true
+	}
+
+	// Return from cache, tracking position for sequential reads
+	if h.readPos >= int64(len(h.readBuffer)) {
+		return 0, io.EOF
+	}
+
+	n := copy(buf, h.readBuffer[h.readPos:])
+	h.readPos += int64(n)
+	return n, nil
 }
 
 func (h *queueFileHandle) ReadAt(buf []byte, offset int64) (int, error) {
