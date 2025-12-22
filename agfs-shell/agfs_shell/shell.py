@@ -37,7 +37,8 @@ class Shell:
         self.running = True
         self.filesystem = AGFSFileSystem(server_url, timeout=timeout)
         self.server_url = server_url
-        self.cwd = '/'  # Current working directory
+        self.cwd = '/'  # Current working directory (virtual path when chroot is set)
+        self.chroot_root = None  # None means no chroot, otherwise absolute path to chroot root
         self.console = Console(highlight=False)  # Rich console for output
         self.multiline_buffer = []  # Buffer for multiline input
         self.env = {}  # Environment variables
@@ -188,7 +189,8 @@ class Shell:
                     env=self.env,
                     shell=self
                 )
-                process.cwd = self.cwd
+                process.cwd = self.resolve_path(self.cwd)  # Real path for filesystem operations
+                process.virtual_cwd = self.cwd  # Virtual path for display (pwd command)
                 processes.append(process)
 
             # Execute pipeline sequentially, like Pipeline class
@@ -895,26 +897,44 @@ class Shell:
 
     def resolve_path(self, path: str) -> str:
         """
-        Resolve a relative or absolute path to an absolute path
+        Resolve a relative or absolute path to an absolute path.
+        If chroot is set, paths are confined within chroot_root.
 
         Args:
             path: Path to resolve (can be relative or absolute)
 
         Returns:
-            Absolute path
+            Absolute path (real path when chroot is set)
         """
         if not path:
-            return self.cwd
+            path = self.cwd
 
-        # Already absolute
+        # No chroot - use original logic
+        if self.chroot_root is None:
+            if path.startswith('/'):
+                return os.path.normpath(path)
+            full_path = os.path.join(self.cwd, path)
+            return os.path.normpath(full_path)
+
+        # With chroot: user sees virtual paths, we return real paths
         if path.startswith('/'):
-            # Normalize the path (remove redundant slashes, handle . and ..)
-            return os.path.normpath(path)
+            # User input absolute path (relative to chroot_root)
+            virtual_path = path
+        else:
+            # User input relative path (relative to virtual cwd)
+            virtual_path = os.path.join(self.cwd, path)
 
-        # Relative path - join with cwd
-        full_path = os.path.join(self.cwd, path)
-        # Normalize to handle . and ..
-        return os.path.normpath(full_path)
+        # Normalize virtual path (handles .. etc)
+        virtual_path = os.path.normpath(virtual_path)
+
+        # Ensure virtual path doesn't escape "/"
+        # normpath turns "/../.." into "/" which is what we want
+        if not virtual_path.startswith('/'):
+            virtual_path = '/' + virtual_path
+
+        # Construct real path
+        real_path = os.path.join(self.chroot_root, virtual_path.lstrip('/'))
+        return os.path.normpath(real_path)
 
     def execute_for_loop(self, lines: List[str]) -> int:
         """
@@ -1816,6 +1836,54 @@ class Shell:
                 # Execute user-defined function
                 return self.execute_function(cmd_name, cmd_args)
 
+        # Special handling for chroot command (must be a single command, not in pipeline)
+        if len(commands) == 1 and commands[0][0] == 'chroot':
+            cmd, args = commands[0]
+
+            if not args:
+                # Show current chroot
+                if self.chroot_root:
+                    self.console.print(f"Current chroot: {self.chroot_root}")
+                else:
+                    self.console.print("No chroot set (full access)")
+                return 0
+
+            target = args[0]
+
+            # Exit chroot
+            if target == '--exit' or target == '-e':
+                if self.chroot_root is None:
+                    self.console.print("[yellow]Not in chroot[/yellow]", highlight=False)
+                    return 1
+                self.chroot_root = None
+                self.cwd = '/'
+                self.console.print("Exited chroot", highlight=False)
+                return 0
+
+            # Resolve target path (use current context)
+            resolved_target = self.resolve_path(target)
+
+            # Verify directory exists
+            try:
+                file_info = self.filesystem.get_file_info(resolved_target)
+                is_dir = file_info.get('isDir', False) or file_info.get('type') == 'directory'
+
+                if not is_dir:
+                    self.console.print(f"[red]chroot: {target}: Not a directory[/red]", highlight=False)
+                    return 1
+
+                self.chroot_root = resolved_target
+                self.cwd = '/'  # Reset to virtual root
+                self.console.print(f"Changed root to: {resolved_target}", highlight=False)
+                return 0
+            except Exception as e:
+                error_msg = str(e)
+                if "No such file or directory" in error_msg or "not found" in error_msg.lower():
+                    self.console.print(f"[red]chroot: {target}: No such file or directory[/red]", highlight=False)
+                else:
+                    self.console.print(f"[red]chroot: {target}: {error_msg}[/red]", highlight=False)
+                return 1
+
         # Special handling for cd command (must be a single command, not in pipeline)
         # Using metadata instead of hardcoded check
         if len(commands) == 1 and CommandMetadata.changes_cwd(commands[0][0]):
@@ -1835,7 +1903,16 @@ class Shell:
                     return 1
 
                 # It's a directory (or symlink to directory), change to it
-                self.cwd = resolved_path
+                # In chroot mode, cwd is virtual path; otherwise it's the real path
+                if self.chroot_root:
+                    # Calculate virtual path
+                    if target.startswith('/'):
+                        virtual_path = target
+                    else:
+                        virtual_path = os.path.join(self.cwd, target)
+                    self.cwd = os.path.normpath(virtual_path)
+                else:
+                    self.cwd = resolved_path
                 return 0
             except Exception as e:
                 error_msg = str(e)
@@ -1925,7 +2002,8 @@ class Shell:
                 shell=self
             )
             # Pass cwd to process for pwd command
-            process.cwd = self.cwd
+            process.cwd = self.resolve_path(self.cwd)  # Real path for filesystem operations
+            process.virtual_cwd = self.cwd  # Virtual path for display (pwd command)
             processes.append(process)
 
         # Special case: direct streaming from stdin to file
@@ -2118,7 +2196,10 @@ class Shell:
                         print()
 
                     # Re-display prompt
-                    prompt = f"agfs:{self.cwd}> "
+                    if self.chroot_root:
+                        prompt = f"agfs[chroot]:{self.cwd}> "
+                    else:
+                        prompt = f"agfs:{self.cwd}> "
                     print(prompt + readline.get_line_buffer(), end='', flush=True)
 
                 readline.set_completion_display_matches_hook(display_matches)
@@ -2172,7 +2253,10 @@ class Shell:
                 # Read command (possibly multiline)
                 try:
                     # Primary prompt
-                    prompt = f"agfs:{self.cwd}> "
+                    if self.chroot_root:
+                        prompt = f"agfs[chroot]:{self.cwd}> "
+                    else:
+                        prompt = f"agfs:{self.cwd}> "
                     line = input(prompt)
 
                     # Start building the command

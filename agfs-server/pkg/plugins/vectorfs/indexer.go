@@ -3,6 +3,7 @@ package vectorfs
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -40,25 +41,28 @@ func (idx *Indexer) PrepareDocument(namespace, digest, fileName, content string)
 	log.Infof("[vectorfs/indexer] Preparing document: %s (namespace: %s, digest: %s)",
 		fileName, namespace, digest)
 
-	// Check if already indexed (same content)
-	exists, err := idx.tidbClient.FileExists(namespace, digest)
+	// Check if content already indexed (same digest = same content)
+	// If so, skip S3 upload but still create file metadata for the new filename
+	contentExists, err := idx.tidbClient.FileExists(namespace, digest)
 	if err != nil {
 		return false, fmt.Errorf("failed to check if file exists: %w", err)
 	}
 
-	if exists {
-		log.Infof("[vectorfs/indexer] Document already exists, skipping: %s", digest)
-		return true, nil
-	}
-
-	// Upload to S3
 	s3Key := idx.s3Client.buildKey(namespace, digest)
-	err = idx.s3Client.UploadDocument(ctx, namespace, digest, []byte(content))
-	if err != nil {
-		return false, fmt.Errorf("failed to upload to S3: %w", err)
+
+	if !contentExists {
+		// Upload to S3 only if content doesn't exist
+		err = idx.s3Client.UploadDocument(ctx, namespace, digest, []byte(content))
+		if err != nil {
+			return false, fmt.Errorf("failed to upload to S3: %w", err)
+		}
+		log.Infof("[vectorfs/indexer] Uploaded to S3: %s", digest)
+	} else {
+		log.Infof("[vectorfs/indexer] Content already in S3, skipping upload: %s", digest)
 	}
 
-	// Insert file metadata - after this, file is visible via ls/cat
+	// Always insert file metadata for the new filename
+	// This allows the same content to exist under multiple filenames
 	now := time.Now()
 	metadata := FileMetadata{
 		FileDigest: digest,
@@ -74,8 +78,9 @@ func (idx *Indexer) PrepareDocument(namespace, digest, fileName, content string)
 		return false, fmt.Errorf("failed to insert file metadata: %w", err)
 	}
 
-	log.Infof("[vectorfs/indexer] Document prepared (S3 + metadata): %s", fileName)
-	return false, nil
+	log.Infof("[vectorfs/indexer] Document prepared (metadata): %s", fileName)
+	// Return contentExists to indicate if chunk indexing can be skipped
+	return contentExists, nil
 }
 
 // IndexChunks performs chunking, embedding generation, and stores chunks in TiDB (async phase).
@@ -83,6 +88,12 @@ func (idx *Indexer) PrepareDocument(namespace, digest, fileName, content string)
 func (idx *Indexer) IndexChunks(namespace, digest, fileName, content string) error {
 	log.Infof("[vectorfs/indexer] Indexing chunks for document: %s (namespace: %s, digest: %s)",
 		fileName, namespace, digest)
+
+	// Skip empty files - they have no content to index
+	if strings.TrimSpace(content) == "" {
+		log.Infof("[vectorfs/indexer] Skipping empty file: %s", fileName)
+		return nil
+	}
 
 	// Chunk the document
 	chunks := ChunkDocument(content, idx.chunkerConfig)

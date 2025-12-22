@@ -442,7 +442,10 @@ func parsePath(path string) (namespace string, relativePath string, err error) {
 }
 
 func (vfs *vectorFS) Create(path string) error {
-	return nil // Files are created on Write
+	// Create an empty file by writing empty content
+	// This ensures the file exists for subsequent Stat/Open operations
+	_, err := vfs.Write(path, []byte{}, 0, filesystem.WriteFlagCreate)
+	return err
 }
 
 func (vfs *vectorFS) Mkdir(path string, perm uint32) error {
@@ -451,10 +454,17 @@ func (vfs *vectorFS) Mkdir(path string, perm uint32) error {
 		return err
 	}
 
-	// If creating subdirectory under docs/, allow it (virtual, no-op)
+	// If creating subdirectory under docs/, create a placeholder file
+	// so the directory is visible in listings and Stat operations
 	if relativePath != "" {
 		if strings.HasPrefix(relativePath, "docs/") {
-			// Virtual subdirectory - no action needed, just return success
+			// Create a hidden .keep file to make the directory visible
+			dirName := strings.TrimPrefix(relativePath, "docs/")
+			keepFilePath := path + "/.keep"
+			_, err := vfs.Write(keepFilePath, []byte(""), 0, filesystem.WriteFlagCreate)
+			if err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", dirName, err)
+			}
 			return nil
 		}
 		return fmt.Errorf("can only create namespace directories or docs/ subdirectories")
@@ -542,31 +552,56 @@ func (vfs *vectorFS) Read(path string, offset int64, size int64) ([]byte, error)
 }
 
 func (vfs *vectorFS) Write(path string, data []byte, offset int64, flags filesystem.WriteFlag) (int64, error) {
+	log.Debugf("[vectorfs] Write called: path=%s, len=%d, offset=%d", path, len(data), offset)
+
 	namespace, relativePath, err := parsePath(path)
 	if err != nil {
+		log.Errorf("[vectorfs] Write parsePath failed: path=%s, err=%v", path, err)
 		return 0, err
 	}
 
+	log.Debugf("[vectorfs] Write parsed: namespace=%s, relativePath=%s", namespace, relativePath)
+
 	// Only allow writing to docs/ directory
 	if !strings.HasPrefix(relativePath, "docs/") {
+		log.Errorf("[vectorfs] Write rejected: path=%s not in docs/", path)
 		return 0, fmt.Errorf("can only write files to docs/ directory")
 	}
 
-	// Calculate file digest
-	hash := sha256.Sum256(data)
-	digest := hex.EncodeToString(hash[:])
+	// Calculate file digest - include filename for empty files to avoid collision
+	// (all empty files would have the same content hash otherwise)
+	var digest string
+	if len(data) == 0 {
+		// For empty files, use hash of filename to ensure uniqueness
+		hash := sha256.Sum256([]byte("empty:" + relativePath))
+		digest = hex.EncodeToString(hash[:])
+	} else {
+		hash := sha256.Sum256(data)
+		digest = hex.EncodeToString(hash[:])
+	}
 
 	// Extract relative path from docs/ (includes subdirectories)
 	// relativePath format: "docs/subdir/file.txt" -> fileName: "subdir/file.txt"
 	fileName := strings.TrimPrefix(relativePath, "docs/")
 	content := string(data)
 
+	log.Debugf("[vectorfs] Write: namespace=%s, fileName=%s, digest=%s, len=%d", namespace, fileName, digest[:16], len(data))
+
+	// Delete any existing versions of this file before writing new content
+	// This prevents duplicate entries with different digests for the same filename
+	if err := vfs.plugin.tidbClient.DeleteFileByName(namespace, fileName); err != nil {
+		log.Warnf("[vectorfs] Failed to delete old versions of %s: %v", fileName, err)
+		// Continue anyway - the write might still succeed
+	}
+
 	// Phase 1 (synchronous): Upload to S3 and register metadata in TiDB
 	// After this, the file is immediately visible via ls/cat
 	alreadyExists, err := vfs.plugin.indexer.PrepareDocument(namespace, digest, fileName, content)
 	if err != nil {
+		log.Errorf("[vectorfs] PrepareDocument failed: %v", err)
 		return 0, fmt.Errorf("failed to prepare document: %w", err)
 	}
+	log.Debugf("[vectorfs] PrepareDocument done: alreadyExists=%v", alreadyExists)
 
 	// If document already exists (same content), no need to re-index chunks
 	if alreadyExists {
@@ -862,7 +897,8 @@ func (vfs *vectorFS) Rename(oldPath, newPath string) error {
 }
 
 func (vfs *vectorFS) Chmod(path string, mode uint32) error {
-	return fmt.Errorf("chmod not supported in vectorfs")
+	// Silently ignore permission changes - vectorfs doesn't support permissions
+	return nil
 }
 
 func (vfs *vectorFS) Open(path string) (io.ReadCloser, error) {

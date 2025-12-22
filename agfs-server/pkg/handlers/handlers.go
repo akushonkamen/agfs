@@ -267,6 +267,8 @@ func (h *Handler) WriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Debugf("[handler] WriteFile: path=%s, len=%d", path, len(data))
+
 	// Record upstream traffic
 	if h.trafficMonitor != nil && len(data) > 0 {
 		h.trafficMonitor.RecordWrite(int64(len(data)))
@@ -275,11 +277,13 @@ func (h *Handler) WriteFile(w http.ResponseWriter, r *http.Request) {
 	// Use default flags: create if not exists, truncate (like the old behavior)
 	bytesWritten, err := h.fs.Write(path, data, -1, filesystem.WriteFlagCreate|filesystem.WriteFlagTruncate)
 	if err != nil {
+		log.Errorf("[handler] WriteFile failed: path=%s, err=%v", path, err)
 		status := mapErrorToStatus(err)
 		writeError(w, status, err.Error())
 		return
 	}
 
+	log.Debugf("[handler] WriteFile success: path=%s, written=%d", path, bytesWritten)
 	// Return success with bytes written
 	writeJSON(w, http.StatusOK, SuccessResponse{Message: fmt.Sprintf("Written %d bytes", bytesWritten)})
 }

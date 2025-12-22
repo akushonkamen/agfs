@@ -490,7 +490,47 @@ func (c *TiDBClient) DeleteFileMetadata(namespace, fileDigest string) error {
 	return err
 }
 
-// GetFileMetadataByName retrieves file metadata by file name
+// DeleteFileByName deletes all versions of a file by name (used before writing new content)
+func (c *TiDBClient) DeleteFileByName(namespace, fileName string) error {
+	tableSuffix := sanitizeTableName(namespace)
+	metaTable := fmt.Sprintf("tbl_meta_%s", tableSuffix)
+	chunksTable := fmt.Sprintf("tbl_chunks_%s", tableSuffix)
+
+	// First get all digests for this filename
+	query := fmt.Sprintf("SELECT file_digest FROM %s WHERE file_name = ?", metaTable)
+	rows, err := c.db.Query(query, fileName)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var digests []string
+	for rows.Next() {
+		var digest string
+		if err := rows.Scan(&digest); err != nil {
+			return err
+		}
+		digests = append(digests, digest)
+	}
+
+	// Delete chunks and metadata for each digest
+	for _, digest := range digests {
+		// Delete chunks
+		chunkQuery := fmt.Sprintf("DELETE FROM %s WHERE file_digest = ?", chunksTable)
+		if _, err := c.db.Exec(chunkQuery, digest); err != nil {
+			return err
+		}
+		// Delete metadata
+		metaQuery := fmt.Sprintf("DELETE FROM %s WHERE file_digest = ?", metaTable)
+		if _, err := c.db.Exec(metaQuery, digest); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetFileMetadataByName retrieves file metadata by file name (returns the latest version)
 func (c *TiDBClient) GetFileMetadataByName(namespace, fileName string) (*FileMetadata, error) {
 	tableSuffix := sanitizeTableName(namespace)
 	metaTable := fmt.Sprintf("tbl_meta_%s", tableSuffix)
@@ -499,6 +539,7 @@ func (c *TiDBClient) GetFileMetadataByName(namespace, fileName string) (*FileMet
 		SELECT file_digest, file_name, s3_key, file_size, created_at, updated_at
 		FROM %s
 		WHERE file_name = ?
+		ORDER BY updated_at DESC
 		LIMIT 1
 	`, metaTable)
 
