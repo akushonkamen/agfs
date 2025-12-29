@@ -28,6 +28,9 @@ agfs-shell provides a lightweight interpreter with bash-like syntax, enabling sc
   - [Conditional Testing](#conditional-testing)
   - [Control Flow Commands](#control-flow-commands)
   - [AGFS Management](#agfs-management)
+    - [chroot](#chroot-path----exit)
+    - [plugins](#plugins)
+    - [mount](#mount-plugin-path-options)
   - [Utility Commands](#utility-commands)
   - [AI Integration](#ai-integration)
 - [Script Files](#script-files)
@@ -48,6 +51,9 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - AGFS integration for distributed file operations
 - Tab completion and command history
 - AI-powered command (llm integration)
+- Command aliasing for custom shortcuts
+- VectorFS semantic search (fsgrep)
+- Chroot support for directory isolation
 - Pure Python implementation (no subprocess for builtins)
 
 **Note:** This is an educational shell implementation with full scripting capabilities including recursive functions and nested command substitution.
@@ -66,14 +72,14 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - **Functions**: User-defined functions with parameters, local variables, return values, and recursion
 - **Comments**: `#` and `//` style comments
 
-### Built-in Commands (42+)
-- **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, mv, stat, cp, ln, upload, download
-- **Text Processing**: echo, grep, jq, wc, head, tail, tee, sort, uniq, tr, rev, cut
+### Built-in Commands (47+)
+- **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, truncate, mv, stat, cp, ln, upload, download
+- **Text Processing**: echo, grep, fsgrep, jq, wc, head, tail, tee, sort, uniq, tr, rev, cut
 - **Path Utilities**: basename, dirname
 - **Variables**: export, env, unset, local
 - **Testing**: test, [ ]
 - **Control Flow**: break, continue, exit, return, true, false, source, .
-- **Utilities**: sleep, date, plugins, mount, help
+- **Utilities**: sleep, date, plugins, mount, chroot, alias, unalias, help
 - **AI**: llm (LLM integration)
 - **Operators**: `&&` (AND), `||` (OR) for conditional command execution
 
@@ -686,6 +692,28 @@ rm /local/tmp/file.txt       # Remove file
 rm -r /local/tmp/mydir       # Remove directory recursively
 ```
 
+#### truncate -s SIZE FILE...
+Truncate or extend file to specified size.
+
+```bash
+truncate -s 0 file.txt           # Truncate file to zero bytes (empty file)
+truncate -s 1024 file.txt        # Truncate/extend file to 1024 bytes
+truncate --size=100 f1 f2        # Truncate multiple files to 100 bytes
+```
+
+**Options:**
+- `-s SIZE` or `--size=SIZE`: Set file size to SIZE bytes
+
+**Behavior:**
+- If SIZE is less than current file size, extra data is lost (file is truncated)
+- If SIZE is greater than current file size, file is extended with null bytes
+- SIZE must be a non-negative integer (number of bytes)
+
+**Use Cases:**
+- Clear log files without deleting them: `truncate -s 0 /local/tmp/app.log`
+- Preallocate file space: `truncate -s 1048576 large.dat`
+- Reset files to empty state while preserving permissions
+
 #### mv source dest
 Move or rename files/directories.
 
@@ -787,6 +815,58 @@ grep "pattern" file1.txt file2.txt
 # With pipeline
 cat /local/tmp/app.log | grep -i error | grep -v warning
 ```
+
+#### fsgrep [OPTIONS] PATTERN PATH
+Server-side grep using filesystem's custom implementation. **Supports VectorFS semantic search** and other custom grep implementations.
+
+```bash
+# VectorFS semantic search
+fsgrep "container orchestration" /vectorfs/project/docs
+fsgrep -n 5 "infrastructure automation" /vectorfs/namespace/docs
+
+# Regular text grep on other filesystems
+fsgrep "error" /local/tmp/app.log
+fsgrep -i "warning" /s3fs/aws/logs/
+fsgrep -c "TODO" /sqlfs/tidb/code/
+```
+
+**Options:**
+- `-r`: Recursive search (default for directories)
+- `-i`: Case insensitive (for text grep, not VectorFS)
+- `-n NUM`: Return top N results (for VectorFS, default 10)
+- `-c`: Count matches only
+- `-q`: Quiet mode (only show if matches found)
+
+**VectorFS Features:**
+- **Semantic search** using embeddings instead of exact pattern matching
+- Returns results ranked by relevance with similarity scores
+- Automatically searches all documents in namespace
+- Use `-n` to control how many results to return
+- Perfect for finding conceptually similar content
+
+**Examples:**
+
+```bash
+# Semantic search in documentation
+fsgrep "how to deploy containers" /vectorfs/docs
+# Output shows semantically similar results with relevance scores
+
+# Limit results
+fsgrep -n 3 "database migration" /vectorfs/project/docs
+
+# Count semantic matches
+fsgrep -c "API authentication" /vectorfs/codebase
+
+# Regular grep on other filesystems
+fsgrep -r "ERROR" /local/tmp/logs/
+fsgrep -i "exception" /s3fs/aws/app.log
+```
+
+**Use Cases:**
+- Find documentation by concept rather than exact keywords
+- Discover related code or content semantically
+- Search across large document collections efficiently
+- Fallback to traditional grep on non-VectorFS filesystems
 
 #### jq filter [files]
 Process JSON data.
@@ -1165,6 +1245,70 @@ source /local/tmp/script.sh arg1 arg2
 
 ### AGFS Management
 
+#### chroot [PATH | --exit]
+Change the root directory context for the shell session. This restricts file operations to within the specified directory, similar to Unix `chroot`.
+
+```bash
+# Show current chroot status
+chroot
+# Output: No chroot set (full access)
+
+# Change root to a directory
+chroot /local/data
+# Output: Changed root to: /local/data
+
+# After chroot, all paths are relative to the new root
+pwd
+# Output: /
+
+ls /
+# Lists contents of /local/data (the new root)
+
+cd subdir
+pwd
+# Output: /subdir (actually /local/data/subdir)
+
+# Exit chroot and return to full access
+chroot --exit
+# or
+chroot -e
+# Output: Exited chroot
+
+# After exit, you're back to normal root
+pwd
+# Output: /
+```
+
+**Features:**
+- Restricts file operations to within a specified directory tree
+- All paths are interpreted relative to the chroot root
+- Prompt changes to `agfs[chroot]:/>` to indicate chroot mode
+- Use `--exit` or `-e` to exit chroot mode
+- Virtual path display: `pwd` and paths shown are relative to chroot root
+- Works with all file operations: `cd`, `ls`, `cat`, `mkdir`, etc.
+
+**Use Cases:**
+- Isolate operations to a specific project directory
+- Prevent accidental access to files outside a workspace
+- Create sandboxed environments for testing
+- Simplify path management within a deep directory structure
+
+**Example - Project Isolation:**
+```bash
+# Work on a specific project
+chroot /local/projects/myapp
+
+# Now all operations are confined to /local/projects/myapp
+mkdir src
+cd src
+touch main.py
+ls /
+# Shows: src (and other contents of /local/projects/myapp)
+
+# Exit when done
+chroot --exit
+```
+
 #### plugins
 Manage AGFS plugins.
 
@@ -1195,6 +1339,85 @@ mount customfs /custom option1=value1,option2=value2
 ```
 
 ### Utility Commands
+
+#### alias [name[=value] ...]
+Define or display command aliases. Create shortcuts for frequently used commands.
+
+```bash
+# List all aliases
+alias
+
+# Show specific alias
+alias ll
+
+# Create aliases
+alias ll='ls -l'
+alias la='ls -la'
+alias ..='cd ..'
+alias grep='grep --color=auto'
+
+# Use alias in commands
+ll /local/tmp
+..
+```
+
+**Features:**
+- Aliases are expanded before command execution
+- Support for any command with arguments
+- Aliases persist within shell session
+- Can create aliases for pipelines and complex commands
+
+**Examples:**
+
+```bash
+# Shortcut for long commands
+alias lh='ls -lh'
+alias count='wc -l'
+
+# Pipeline aliases
+alias errors='grep -i error'
+alias tofile='tee /local/tmp/output.txt'
+
+# Directory navigation
+alias home='cd /local'
+alias docs='cd /local/docs'
+
+# Use aliases
+cat /local/tmp/app.log | errors | count
+```
+
+**Note:** To prevent alias expansion, quote the command or use a backslash: `\command`
+
+#### unalias [-a] name [name ...]
+Remove command aliases.
+
+```bash
+# Remove single alias
+unalias ll
+
+# Remove multiple aliases
+unalias ll la lh
+
+# Remove all aliases
+unalias -a
+```
+
+**Options:**
+- `-a`: Remove all alias definitions
+
+**Examples:**
+
+```bash
+# Create and remove aliases
+alias test='echo test'
+test                    # Output: test
+unalias test
+test                    # Error: command not found
+
+# Clean up all aliases
+unalias -a
+alias                   # Shows no aliases
+```
 
 #### sleep seconds
 Pause execution for specified seconds (supports decimals).
@@ -1873,9 +2096,12 @@ agfs-shell/
 - Loop control (`break`, `continue`)
 - User-defined functions with local variables
 - Tab completion and history
-- 39+ built-in commands
+- 47+ built-in commands
 - Script execution (`.as` files)
 - AI integration (`llm` command)
+- Chroot support for directory isolation
+- Command aliasing (`alias`/`unalias`)
+- VectorFS semantic search (`fsgrep`)
 
 ## Testing
 
