@@ -32,7 +32,7 @@ from .expression import ExpressionExpander
 class Shell:
     """Simple shell with pipeline support"""
 
-    def __init__(self, server_url: str = "http://localhost:8080", timeout: int = 30):
+    def __init__(self, server_url: str = "http://localhost:8080", timeout: int = 30, initial_env: dict = None):
         self.parser = CommandParser()
         self.running = True
         self.filesystem = AGFSFileSystem(server_url, timeout=timeout)
@@ -42,6 +42,9 @@ class Shell:
         self.console = Console(highlight=False)  # Rich console for output
         self.multiline_buffer = []  # Buffer for multiline input
         self.env = {}  # Environment variables
+        # Inject initial environment variables if provided
+        if initial_env:
+            self.env.update(initial_env)
         self.env['?'] = '0'  # Last command exit code
 
         # Set default history file location

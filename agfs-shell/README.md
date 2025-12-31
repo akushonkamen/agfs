@@ -1712,9 +1712,27 @@ agfs:/> if [ -f /local/tmp/file.txt ]; then
 
 When agfs-shell starts, it automatically checks for and executes initialization scripts from the AGFS filesystem. This allows you to set up environment variables, define functions, aliases, and perform other initialization tasks.
 
-### Initialization File Locations
+### Command Line Options
 
-The following files are checked in order. If a file exists, it is executed as an agfs-shell script:
+Control initrc execution with these options:
+
+```bash
+# Skip all initrc scripts
+agfs-shell --skip-initrc
+
+# Use a custom initrc script (skips default scripts)
+agfs-shell --initrc /path/to/custom_initrc.as
+
+# Custom initrc from AGFS path
+agfs-shell --initrc /etc/my_profile
+
+# Custom initrc from local filesystem
+agfs-shell --initrc ~/my_initrc.as
+```
+
+### Default Initialization File Locations
+
+When no `--initrc` or `--skip-initrc` is specified, the following files are checked in order. If a file exists, it is executed as an agfs-shell script:
 
 1. `/etc/rc`
 2. `/etc/initrc`
@@ -2185,6 +2203,30 @@ Set request timeout:
 export AGFS_TIMEOUT=60
 uv run agfs-shell --timeout 60
 ```
+
+### Environment Variables
+
+Inject environment variables at startup using `--env`:
+
+```bash
+# Single variable
+agfs-shell --env FOO=bar
+
+# Multiple variables
+agfs-shell --env FOO=bar --env BAZ=qux -c 'echo $FOO $BAZ'
+
+# Bulk injection from shell environment
+agfs-shell --env "$(env)" -c 'echo $PATH'
+
+# Bulk injection from custom format (KEY=VALUE per line)
+agfs-shell --env "$(cat my_env_file)" -c 'env'
+```
+
+**Features:**
+- Single `KEY=VALUE` format for individual variables
+- Multi-line format for bulk injection (one `KEY=VALUE` per line)
+- Can be combined: `--env "$(env)" --env CUSTOM=value`
+- Variables are available immediately in shell session
 
 ## Technical Notes
 
