@@ -901,6 +901,12 @@ func (vfs *vectorFS) Chmod(path string, mode uint32) error {
 	return nil
 }
 
+// Truncate is a no-op for vectorfs since it's a document store
+// This allows shell redirections to work properly
+func (vfs *vectorFS) Truncate(path string, size int64) error {
+	return nil
+}
+
 func (vfs *vectorFS) Open(path string) (io.ReadCloser, error) {
 	data, err := vfs.Read(path, 0, -1)
 	if err != nil {
