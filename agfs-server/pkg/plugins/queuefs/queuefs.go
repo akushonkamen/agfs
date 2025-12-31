@@ -884,6 +884,14 @@ func (qfs *queueFS) Chmod(path string, mode uint32) error {
 	return fmt.Errorf("cannot change permissions in queuefs service")
 }
 
+// Truncate is a no-op for queuefs since control files are virtual and don't have traditional file sizes
+// This allows shell redirections (which attempt to truncate before writing) to work properly
+func (qfs *queueFS) Truncate(path string, size int64) error {
+	// Silently succeed - truncate doesn't make sense for queue control files
+	// but we allow it to support common shell operations like `echo "data" > /queuefs/queue/enqueue`
+	return nil
+}
+
 func (qfs *queueFS) Open(path string) (io.ReadCloser, error) {
 	data, err := qfs.Read(path, 0, -1)
 	if err != nil {
