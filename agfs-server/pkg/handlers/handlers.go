@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -124,7 +125,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 // mapErrorToStatus maps filesystem errors to HTTP status codes
 func mapErrorToStatus(err error) int {
-	if errors.Is(err, filesystem.ErrNotFound) {
+	if errors.Is(err, filesystem.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		return http.StatusNotFound
 	}
 	if errors.Is(err, filesystem.ErrPermissionDenied) {
