@@ -32,6 +32,7 @@ agfs-shell provides a lightweight interpreter with bash-like syntax, enabling sc
     - [plugins](#plugins)
     - [mount](#mount-plugin-path-options)
   - [Utility Commands](#utility-commands)
+  - [Network Commands](#network-commands)
   - [AI Integration](#ai-integration)
 - [Script Files](#script-files)
 - [Interactive Features](#interactive-features)
@@ -51,6 +52,7 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - AGFS integration for distributed file operations
 - Tab completion and command history
 - AI-powered command (llm integration)
+- HTTP client with persistent state management
 - Command aliasing for custom shortcuts
 - VectorFS semantic search (fsgrep)
 - Chroot support for directory isolation
@@ -72,7 +74,7 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - **Functions**: User-defined functions with parameters, local variables, return values, and recursion
 - **Comments**: `#` and `//` style comments
 
-### Built-in Commands (47+)
+### Built-in Commands (48+)
 - **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, truncate, mv, stat, cp, ln, upload, download
 - **Text Processing**: echo, grep, fsgrep, jq, wc, head, tail, tee, sort, uniq, tr, rev, cut
 - **Path Utilities**: basename, dirname
@@ -80,6 +82,7 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - **Testing**: test, [ ]
 - **Control Flow**: break, continue, exit, return, true, false, source, .
 - **Utilities**: sleep, date, plugins, mount, chroot, alias, unalias, help
+- **Network**: http (HTTP client with persistent state)
 - **AI**: llm (LLM integration)
 - **Operators**: `&&` (AND), `||` (OR) for conditional command execution
 
@@ -1463,6 +1466,142 @@ Show help message.
 help                 # Display comprehensive help
 ```
 
+### Network Commands
+
+#### http METHOD URL [options]
+Make HTTP requests with persistent configuration. A minimalist HTTP client designed for shell scripting with bash-like state management.
+
+```bash
+# Basic requests
+http GET https://api.example.com/users
+http POST https://api.example.com/users -j '{"name":"alice"}'
+http DELETE https://api.example.com/users/123
+
+# With query parameters
+http GET https://httpbin.org/get -q term=hello -q limit=10
+
+# With custom headers
+http GET https://httpbin.org/headers -H "Authorization:Bearer token123"
+http POST https://httpbin.org/post -H "Content-Type:application/xml" -d '<data>...</data>'
+
+# Download binary files
+http GET https://example.com/file.tar.gz --stdout > file.tar.gz
+
+# Set base URL for cleaner commands
+http set base https://httpbin.org
+http GET /get
+http POST /post -j '{"name":"bob"}'
+
+# Set default headers (persist across requests)
+http set header Authorization "Bearer secret-token"
+http set header X-API-Version "v2"
+http GET /headers
+
+# Set timeout
+http set timeout 10s
+http set timeout 5000ms
+
+# Fail on non-2xx status codes
+http GET https://httpbin.org/status/404 -f
+
+# Show response headers
+http GET https://httpbin.org/get -i
+
+# Save response to variable
+http GET https://httpbin.org/get -o response
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-H key:value` | Add request header |
+| `-j JSON` | Send JSON body (auto-sets Content-Type: application/json) |
+| `-d DATA` | Send raw body data |
+| `-q key=value` | Add query parameter (can be used multiple times) |
+| `-f` | Fail on non-2xx status codes (returns exit code 1) |
+| `-i` | Show response headers in output |
+| `-o var` | Save response to shell variable |
+| `--stdout` | Output only raw response body (for binary downloads) |
+
+**Configuration Commands:**
+
+```bash
+http set base <url>              # Set base URL for relative paths
+http set header <key> <value>    # Set default header for all requests
+http set timeout <duration>      # Set timeout (e.g., 5s, 1000ms)
+```
+
+**State Management:**
+
+The HTTP client maintains persistent state within a shell session:
+- Base URL: Set once, use relative paths in subsequent requests
+- Default headers: Apply to all requests automatically
+- Timeout: Configurable per session
+
+State is stored in the shell and persists across commands in the same session.
+
+**Response Format:**
+
+Normal mode shows status line, optional headers, and body:
+```
+HTTP 200 (342ms)
+{"result":"success"}
+```
+
+With `--stdout` flag, only raw body is output (useful for piping or downloading):
+```bash
+http GET https://example.com/data.json --stdout | jq .
+http GET https://example.com/image.png --stdout > image.png
+```
+
+**Examples:**
+
+```bash
+# REST API workflow
+http set base https://jsonplaceholder.typicode.com
+http GET /posts/1
+http POST /posts -j '{"title":"foo","body":"bar","userId":1}'
+http PUT /posts/1 -j '{"id":1,"title":"updated","body":"content","userId":1}'
+http DELETE /posts/1
+
+# With authentication
+http set base https://api.github.com
+http set header Authorization "token ghp_xxxxxxxxxxxx"
+http set header Accept "application/vnd.github.v3+json"
+http GET /user/repos
+
+# Download files
+http GET https://example.com/archive.zip --stdout > archive.zip
+http GET https://cdn.example.com/image.jpg --stdout > image.jpg
+
+# Error handling
+http GET https://httpbin.org/status/200 -f -o result
+if [ $? -eq 0 ]; then
+    echo "Request successful"
+else
+    echo "Request failed"
+fi
+
+# Pipeline integration
+http GET https://httpbin.org/get --stdout | jq '.headers'
+http GET https://jsonplaceholder.typicode.com/users --stdout | jq '.[] | .name'
+```
+
+**Use Cases:**
+- REST API testing and interaction
+- Downloading files from URLs
+- CI/CD script integration
+- API automation in shell scripts
+- Quick HTTP requests without external tools
+
+**Technical Details:**
+- Uses Python's built-in `urllib.request` (no external dependencies)
+- Supports GET, POST, PUT, DELETE, PATCH, and all HTTP methods
+- Automatic JSON content-type headers with `-j` flag
+- Binary-safe for downloading files with `--stdout`
+- Reports response time in milliseconds
+
 ### AI Integration
 
 #### llm [OPTIONS] [PROMPT]
@@ -2077,12 +2216,17 @@ agfs-shell/
 │   ├── parser.py            # Command line parser
 │   ├── builtins.py          # Built-in command implementations
 │   ├── filesystem.py        # AGFS filesystem abstraction
+│   ├── http_client.py       # HTTP client with persistent state
 │   ├── config.py            # Configuration management
 │   ├── shell.py             # Shell with REPL and control flow
 │   ├── completer.py         # Tab completion
 │   ├── cli.py               # CLI entry point
 │   ├── exit_codes.py        # Exit code constants
-│   └── command_decorators.py # Command metadata
+│   ├── command_decorators.py # Command metadata
+│   └── commands/            # Built-in command modules
+│       ├── __init__.py      # Command registry
+│       ├── http.py          # HTTP command
+│       └── ...              # Other commands
 ├── pyproject.toml           # Project configuration
 ├── README.md                # This file
 └── examples/
@@ -2114,8 +2258,9 @@ agfs-shell/
 - Loop control (`break`, `continue`)
 - User-defined functions with local variables
 - Tab completion and history
-- 47+ built-in commands
+- 48+ built-in commands
 - Script execution (`.as` files)
+- HTTP client with persistent state (`http` command)
 - AI integration (`llm` command)
 - Chroot support for directory isolation
 - Command aliasing (`alias`/`unalias`)
