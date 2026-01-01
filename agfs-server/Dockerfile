@@ -48,6 +48,7 @@ COPY --from=builder /build/config.example.yaml /config.yaml
 # Copy agfs-shell portable distribution
 COPY --from=builder /build-shell/dist/agfs-shell-portable /usr/local/agfs-shell
 RUN ln -s /usr/local/agfs-shell/agfs-shell /usr/local/bin/agfs-shell
+RUN ln -s /usr/local/agfs-shell/agfs-shell /usr/local/bin/agfs
 
 # Create directory for localfs mount
 RUN mkdir -p /data
