@@ -230,3 +230,179 @@ func TestS3FSTruncateInterface(t *testing.T) {
 		t.Errorf("Content mismatch: got %q, want %q", string(content), "Hello")
 	}
 }
+
+// TestPrefixIsolation tests that prefix isolation prevents conflicts
+// between nested prefixes like "team1" and "team1/test"
+func TestPrefixIsolation(t *testing.T) {
+	baseCfg, ok := getTestConfig()
+	if !ok {
+		t.Skip("S3 test environment not configured (set S3_TEST_BUCKET)")
+	}
+
+	// Create two instances with nested prefixes
+	// Isolation is automatic - no special configuration needed
+	cfg1 := baseCfg
+	cfg1.Prefix = "isolation-test/team1"
+
+	cfg2 := baseCfg
+	cfg2.Prefix = "isolation-test/team1/subteam"
+
+	fs1, err := NewS3FS(cfg1)
+	if err != nil {
+		t.Fatalf("Failed to create fs1: %v", err)
+	}
+
+	fs2, err := NewS3FS(cfg2)
+	if err != nil {
+		t.Fatalf("Failed to create fs2: %v", err)
+	}
+
+	// Clean up at the end
+	defer fs1.RemoveAll("")
+	defer fs2.RemoveAll("")
+
+	// Test 1: Write to fs2 should not be visible in fs1
+	t.Run("Isolation-WriteToFS2", func(t *testing.T) {
+		// Write a file in fs2
+		testFile := "/data.txt"
+		testContent := []byte("This is from fs2")
+		_, err := fs2.Write(testFile, testContent, -1, filesystem.WriteFlagCreate)
+		if err != nil {
+			t.Fatalf("fs2.Write failed: %v", err)
+		}
+		defer fs2.Remove(testFile)
+
+		// Verify it exists in fs2
+		content, err := readIgnoreEOF(fs2, testFile)
+		if err != nil {
+			t.Fatalf("fs2.Read failed: %v", err)
+		}
+		if string(content) != string(testContent) {
+			t.Errorf("Content mismatch in fs2: got %q, want %q", string(content), string(testContent))
+		}
+
+		// Verify it does NOT exist in fs1
+		_, err = fs1.Read(testFile, 0, -1)
+		if err == nil {
+			t.Error("File from fs2 should not be visible in fs1")
+		}
+	})
+
+	// Test 2: Write to fs1 should not be visible in fs2
+	t.Run("Isolation-WriteToFS1", func(t *testing.T) {
+		testFile := "/info.txt"
+		testContent := []byte("This is from fs1")
+		_, err := fs1.Write(testFile, testContent, -1, filesystem.WriteFlagCreate)
+		if err != nil {
+			t.Fatalf("fs1.Write failed: %v", err)
+		}
+		defer fs1.Remove(testFile)
+
+		// Verify it exists in fs1
+		content, err := readIgnoreEOF(fs1, testFile)
+		if err != nil {
+			t.Fatalf("fs1.Read failed: %v", err)
+		}
+		if string(content) != string(testContent) {
+			t.Errorf("Content mismatch in fs1: got %q, want %q", string(content), string(testContent))
+		}
+
+		// Verify it does NOT exist in fs2
+		_, err = fs2.Read(testFile, 0, -1)
+		if err == nil {
+			t.Error("File from fs1 should not be visible in fs2")
+		}
+	})
+
+	// Test 3: Directory listing should be isolated
+	t.Run("Isolation-DirectoryListing", func(t *testing.T) {
+		// Create files in both filesystems
+		_, err := fs1.Write("/file1.txt", []byte("fs1"), -1, filesystem.WriteFlagCreate)
+		if err != nil {
+			t.Fatalf("fs1.Write failed: %v", err)
+		}
+		defer fs1.Remove("/file1.txt")
+
+		_, err = fs2.Write("/file2.txt", []byte("fs2"), -1, filesystem.WriteFlagCreate)
+		if err != nil {
+			t.Fatalf("fs2.Write failed: %v", err)
+		}
+		defer fs2.Remove("/file2.txt")
+
+		// List fs1 root - should only see file1.txt
+		files1, err := fs1.ReadDir("")
+		if err != nil {
+			t.Fatalf("fs1.ReadDir failed: %v", err)
+		}
+
+		found1 := false
+		found2 := false
+		for _, f := range files1 {
+			if f.Name == "file1.txt" {
+				found1 = true
+			}
+			if f.Name == "file2.txt" {
+				found2 = true
+			}
+		}
+		if !found1 {
+			t.Error("file1.txt should be visible in fs1")
+		}
+		if found2 {
+			t.Error("file2.txt should NOT be visible in fs1")
+		}
+
+		// List fs2 root - should only see file2.txt
+		files2, err := fs2.ReadDir("")
+		if err != nil {
+			t.Fatalf("fs2.ReadDir failed: %v", err)
+		}
+
+		found1 = false
+		found2 = false
+		for _, f := range files2 {
+			if f.Name == "file1.txt" {
+				found1 = true
+			}
+			if f.Name == "file2.txt" {
+				found2 = true
+			}
+		}
+		if found1 {
+			t.Error("file1.txt should NOT be visible in fs2")
+		}
+		if !found2 {
+			t.Error("file2.txt should be visible in fs2")
+		}
+	})
+
+	// Test 4: Verify user prefixes are reported correctly
+	t.Run("Isolation-PrefixMetadata", func(t *testing.T) {
+		info1, err := fs1.Stat("")
+		if err != nil {
+			t.Fatalf("fs1.Stat failed: %v", err)
+		}
+
+		prefix1 := info1.Meta.Content["prefix"]
+		if prefix1 != "isolation-test/team1" {
+			t.Errorf("fs1 prefix mismatch: got %q, want %q", prefix1, "isolation-test/team1")
+		}
+		t.Logf("fs1 user prefix: %s", prefix1)
+
+		info2, err := fs2.Stat("")
+		if err != nil {
+			t.Fatalf("fs2.Stat failed: %v", err)
+		}
+
+		prefix2 := info2.Meta.Content["prefix"]
+		if prefix2 != "isolation-test/team1/subteam" {
+			t.Errorf("fs2 prefix mismatch: got %q, want %q", prefix2, "isolation-test/team1/subteam")
+		}
+		t.Logf("fs2 user prefix: %s", prefix2)
+
+		// User prefixes should be different
+		if prefix1 == prefix2 {
+			t.Error("fs1 and fs2 should have different prefixes")
+		}
+	})
+}
