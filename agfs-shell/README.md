@@ -19,6 +19,7 @@ agfs-shell provides a lightweight interpreter with bash-like syntax, enabling sc
   - [Command Substitution](#command-substitution)
   - [Glob Patterns](#glob-patterns)
   - [Control Flow](#control-flow)
+  - [Background Jobs](#background-jobs)
   - [Functions](#functions)
   - [Heredoc](#heredoc)
 - [Built-in Commands](#built-in-commands)
@@ -27,6 +28,7 @@ agfs-shell provides a lightweight interpreter with bash-like syntax, enabling sc
   - [Environment Variables](#environment-variables)
   - [Conditional Testing](#conditional-testing)
   - [Control Flow Commands](#control-flow-commands)
+  - [Job Control Commands](#job-control-commands)
   - [AGFS Management](#agfs-management)
     - [chroot](#chroot-path----exit)
     - [plugins](#plugins)
@@ -47,6 +49,7 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 
 **Key Features:**
 - Unix-style pipelines and redirection
+- **Background job control** with `command &` syntax
 - Full scripting support with control flow
 - User-defined functions with local variables and recursion support
 - AGFS integration for distributed file operations
@@ -64,6 +67,7 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 
 ### Core Shell Features
 - **Pipelines**: Chain commands with `|` operator
+- **Background Jobs**: Run commands in background with `&` operator
 - **I/O Redirection**: `<`, `>`, `>>`, `2>`, `2>>`
 - **Heredoc**: Multi-line input with `<<` (supports variable expansion)
 - **Variables**: Assignment, expansion, special variables (`$?`, `$1`, `$@`, etc.)
@@ -74,17 +78,18 @@ agfs-shell is a lightweight, educational shell that demonstrates Unix pipeline c
 - **Functions**: User-defined functions with parameters, local variables, return values, and recursion
 - **Comments**: `#` and `//` style comments
 
-### Built-in Commands (48+)
+### Built-in Commands (50+)
 - **File Operations**: cd, pwd, ls, tree, cat, mkdir, touch, rm, truncate, mv, stat, cp, ln, upload, download
 - **Text Processing**: echo, grep, fsgrep, jq, wc, head, tail, tee, sort, uniq, tr, rev, cut
 - **Path Utilities**: basename, dirname
 - **Variables**: export, env, unset, local
 - **Testing**: test, [ ]
 - **Control Flow**: break, continue, exit, return, true, false, source, .
+- **Job Control**: jobs, wait
 - **Utilities**: sleep, date, plugins, mount, chroot, alias, unalias, help
 - **Network**: http (HTTP client with persistent state)
 - **AI**: llm (LLM integration)
-- **Operators**: `&&` (AND), `||` (OR) for conditional command execution
+- **Operators**: `&&` (AND), `||` (OR) for conditional command execution, `&` for background jobs
 
 ### Interactive Features
 - **Tab Completion**: Commands and file paths (AGFS-aware)
@@ -139,6 +144,13 @@ agfs:/> for i in 1 2 3; do
 Count: 1
 Count: 2
 Count: 3
+
+agfs:/> sleep 3 &
+[1] 140234567890123
+agfs:/> jobs
+[1] Running      sleep 3
+agfs:/> # After 3 seconds...
+[1] Done         sleep 3
 ```
 
 ### Execute Command String
@@ -427,6 +439,88 @@ fi
 # Practical example: fallback chain
 command1 || command2 || command3 || echo "All failed"
 ```
+
+### Background Jobs
+
+Run commands in the background to continue working while they execute:
+
+```bash
+# Basic background job
+sleep 10 &
+# Returns immediately with job ID: [1] 140234567890123
+
+# Multiple background jobs
+sleep 5 & sleep 3 & sleep 1 &
+
+# Background with output (output appears as job runs)
+echo "Processing..." &
+
+# Pipeline in background (entire pipeline runs in background)
+cat /local/tmp/large.txt | grep pattern | sort &
+
+# Check running jobs
+jobs
+# Output:
+# [1] Running      sleep 10
+# [2] Running      cat /local/tmp/large.txt | grep pattern | sort
+
+# Wait for all background jobs to complete
+wait
+
+# Wait for specific job
+sleep 30 &
+jobs              # Shows: [1] Running sleep 30
+wait 1            # Waits for job [1] to complete
+
+# Combining with other operators
+command1 && command2 &    # Run command2 in background if command1 succeeds
+sleep 5 & echo "Started"  # Start background job, then print message
+```
+
+**Job Control Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `jobs` | List all background jobs with status |
+| `jobs -l` | List jobs with thread IDs |
+| `wait` | Wait for all background jobs to complete |
+| `wait <job_id>` | Wait for specific job to complete |
+
+**Job States:**
+
+- **Running**: Job is currently executing
+- **Done**: Job completed successfully
+- **Failed**: Job completed with error (shows exit code)
+
+**Examples:**
+
+```bash
+# Long-running task in background
+cat /local/tmp/huge.log | grep ERROR | sort > /local/tmp/errors.txt &
+jobs                    # [1] Running ...
+# Continue working...
+wait 1                  # Wait for analysis to complete
+
+# Multiple parallel tasks
+for i in 1 2 3 4 5; do
+    sleep $i &          # Start each sleep in background
+done
+jobs                    # Shows all 5 jobs running
+wait                    # Wait for all to complete
+
+# Background job with notification
+(sleep 3; echo "Task complete!") &
+# After 3 seconds, you'll see: "Task complete!"
+# Then: [1] Done (sleep 3; echo "Task complete!")
+```
+
+**Notes:**
+
+- Background jobs output directly to terminal (output may interleave with prompt)
+- Jobs terminate when shell exits (waits for completion or Ctrl+C to force quit)
+- Background jobs receive empty stdin (cannot read from terminal)
+- Job IDs are unique within a shell session
+- See `BACKGROUND_JOBS.md` for detailed documentation
 
 ### Functions
 
@@ -1215,6 +1309,127 @@ if [ $? -eq 0 ]; then
     echo "Valid number"
 fi
 ```
+
+### Job Control Commands
+
+#### jobs [-l]
+List background jobs with their status.
+
+```bash
+# Start some background jobs
+sleep 10 &
+sleep 5 &
+cat /local/tmp/large.txt | grep pattern &
+
+# List all jobs
+jobs
+# Output:
+# [1] Running      sleep 10
+# [2] Running      sleep 5
+# [3] Running      cat /local/tmp/large.txt | grep pattern
+
+# List with thread IDs
+jobs -l
+# Output:
+# [1] 140234567890123 Running      sleep 10
+# [2] 140234567890456 Running      sleep 5
+# [3] 140234567890789 Running      cat /local/tmp/large.txt | grep pattern
+
+# After jobs complete
+jobs
+# Output:
+# (empty - completed jobs are automatically cleaned up after notification)
+```
+
+**Options:**
+- `-l`: Show thread IDs along with job information
+
+**Job Status:**
+- `Running`: Job is currently executing
+- `Done`: Job completed successfully (exit code 0)
+- `Failed (exit N)`: Job completed with non-zero exit code N
+
+**Behavior:**
+- Jobs are listed with job ID, status, and command
+- Completed jobs are shown once as notification, then automatically removed
+- Job IDs are assigned sequentially starting from 1 within each shell session
+- Thread-safe implementation for concurrent job management
+
+#### wait [job_id]
+Wait for background jobs to complete.
+
+```bash
+# Wait for all jobs
+sleep 5 & sleep 3 &
+wait                # Blocks until both complete
+echo "All done"
+
+# Wait for specific job
+sleep 10 &          # Returns: [1] 140234567890123
+sleep 5 &           # Returns: [2] 140234567890456
+wait 2              # Wait only for job [2]
+jobs                # Shows: [1] Running sleep 10
+wait 1              # Now wait for job [1]
+
+# Use wait's exit code
+sleep 2 &
+wait 1
+echo "Exit code: $?"    # 0 if job succeeded
+
+# Wait in scripts
+process_data() {
+    # Start parallel processing
+    process_file1 &
+    process_file2 &
+    process_file3 &
+
+    # Wait for all to complete before continuing
+    wait
+    echo "All files processed"
+}
+```
+
+**Usage:**
+- `wait` - Wait for all background jobs to complete
+- `wait <job_id>` - Wait for specific job to complete
+
+**Return Value:**
+- Returns the exit code of the waited job
+- Returns 0 when waiting for all jobs
+- Returns 127 if job ID not found
+- Returns 1 if job manager unavailable
+
+**Examples:**
+
+```bash
+# Parallel data processing
+for file in /local/tmp/data/*.txt; do
+    (cat $file | grep pattern > $file.filtered) &
+done
+wait    # Wait for all filtering to complete
+echo "All files filtered"
+
+# Error handling with wait
+long_task &
+job_id=$!
+if wait $job_id; then
+    echo "Task succeeded"
+else
+    echo "Task failed with code: $?"
+fi
+
+# Sequential processing with background tasks
+task1 &
+wait                # Wait for task1
+task2 &
+wait                # Wait for task2
+echo "Both tasks complete"
+```
+
+**Thread Safety:**
+- All job operations are thread-safe
+- Safe to call from multiple concurrent contexts
+- Jobs can be waited on from any thread
 
 #### source FILENAME [ARGUMENTS...]
 #### . FILENAME [ARGUMENTS...]
@@ -2246,6 +2461,7 @@ agfs-shell/
 ### Key Features
 
 - Unix-style pipelines (`|`)
+- Background job control (`command &`, `jobs`, `wait`)
 - I/O Redirection (`<`, `>`, `>>`, `2>`, `2>>`)
 - Heredoc (`<<` with expansion)
 - Variables (`VAR=value`, `$VAR`, `${VAR}`)
@@ -2258,7 +2474,7 @@ agfs-shell/
 - Loop control (`break`, `continue`)
 - User-defined functions with local variables
 - Tab completion and history
-- 48+ built-in commands
+- 50+ built-in commands
 - Script execution (`.as` files)
 - HTTP client with persistent state (`http` command)
 - AI integration (`llm` command)
