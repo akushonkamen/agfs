@@ -13,6 +13,7 @@ import (
 	"github.com/c4pt0r/agfs/agfs-server/pkg/mountablefs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugin/api"
+	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/devfs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/gptfs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/heartbeatfs"
 	"github.com/c4pt0r/agfs/agfs-server/pkg/plugins/hellofs"
@@ -44,6 +45,7 @@ type PluginFactory func() plugin.ServicePlugin
 
 // availablePlugins maps plugin names to their factory functions
 var availablePlugins = map[string]PluginFactory{
+	"devfs":          func() plugin.ServicePlugin { return devfs.NewDevFSPlugin() },
 	"serverinfofs":   func() plugin.ServicePlugin { return serverinfofs.NewServerInfoFSPlugin() },
 	"memfs":          func() plugin.ServicePlugin { return memfs.NewMemFSPlugin() },
 	"queuefs":        func() plugin.ServicePlugin { return queuefs.NewQueueFSPlugin() },
@@ -329,6 +331,22 @@ func main() {
 				log.Infof("Loaded plugin: %s", p.Name())
 			}
 		}
+	}
+
+	// Mount DevFS by default (always enabled)
+	log.Info("Mounting default DevFS at /dev...")
+	devfsPlugin := devfs.NewDevFSPlugin()
+	devfsConfig := map[string]interface{}{
+		"mount_path": "/dev",
+	}
+	if err := devfsPlugin.Validate(devfsConfig); err != nil {
+		log.Errorf("Failed to validate DevFS: %v", err)
+	} else if err := devfsPlugin.Initialize(devfsConfig); err != nil {
+		log.Errorf("Failed to initialize DevFS: %v", err)
+	} else if err := mfs.Mount("/dev", devfsPlugin); err != nil {
+		log.Errorf("Failed to mount DevFS at /dev: %v", err)
+	} else {
+		log.Info("DevFS mounted successfully at /dev")
 	}
 
 	// Mount all enabled plugins

@@ -71,6 +71,10 @@ class Shell:
         # Expression expander (unified variable/arithmetic/command substitution)
         self.expression_expander = ExpressionExpander(self)
 
+        # Background job management
+        from .job_manager import JobManager
+        self.job_manager = JobManager()
+
     def _execute_command_substitution(self, command: str) -> str:
         """
         Execute a command and return its output as a string
@@ -1765,6 +1769,29 @@ class Shell:
                     self._set_variable(var_name, var_value)
                     return 0
 
+        # Check for background job operator (&) - must come BEFORE && check
+        background = False
+        if '&' in command_line:
+            from .lexer import QuoteTracker
+            tracker = QuoteTracker()
+            for char in command_line:
+                tracker.process_char(char)
+
+            # Find trailing & that's not part of &&
+            stripped = command_line.rstrip()
+            if not tracker.is_quoted() and stripped.endswith('&') and not stripped.endswith('&&'):
+                background = True
+                command_line = stripped[:-1].rstrip()  # Remove the &
+
+        # Route to background or foreground execution
+        if background:
+            return self._execute_background(command_line, stdin_data, heredoc_data)
+        else:
+            return self._execute_foreground(command_line, stdin_data, heredoc_data)
+
+    def _execute_foreground(self, command_line: str, stdin_data: Optional[bytes] = None,
+                           heredoc_data: Optional[bytes] = None) -> int:
+        """Execute a command in the foreground (blocking execution)"""
         # Handle && and || operators (conditional execution) BEFORE variable expansion
         # Split by && and || while preserving which operator was used
         # Must respect quotes - operators inside quotes are literal text
@@ -2149,6 +2176,49 @@ class Shell:
 
         return exit_code
 
+    def _execute_background(self, command_line: str, stdin_data: Optional[bytes] = None,
+                           heredoc_data: Optional[bytes] = None) -> int:
+        """Execute a command in the background"""
+        import threading
+
+        # Capture job_id in closure for thread function
+        job_id = None
+
+        def run_job():
+            """Thread target function"""
+            try:
+                # Execute the command normally (background jobs get no stdin)
+                exit_code = self._execute_foreground(command_line, None, None)
+                # Update job status
+                self.job_manager.update_job_status(job_id, exit_code)
+            except Exception as e:
+                # Handle errors
+                sys.stderr.write(f"Background job [{job_id}] error: {e}\n")
+                self.job_manager.update_job_status(job_id, 1)
+
+        # Create and start thread
+        thread = threading.Thread(target=run_job, daemon=False)
+        job_id = self.job_manager.add_job(command_line, thread)
+        thread.start()
+
+        # Print job started message (bash-style)
+        if self.interactive:
+            print(f"[{job_id}] {thread.ident}")
+
+        return 0  # Background jobs always return 0 to foreground
+
+    def cleanup_jobs(self):
+        """Clean up background jobs on shell exit"""
+        running_jobs = self.job_manager.get_running_jobs()
+        if running_jobs:
+            print(f"\nWaiting for {len(running_jobs)} background job(s) to complete...")
+            print("(Press Ctrl+C to terminate immediately)")
+            try:
+                self.job_manager.wait_for_all()
+            except KeyboardInterrupt:
+                print("\nTerminating background jobs...")
+                # Threads will be terminated when process exits
+
     def repl(self):
         """Run interactive REPL"""
         # Set interactive mode flag
@@ -2256,6 +2326,18 @@ class Shell:
 
         while self.running:
             try:
+                # Check for completed jobs and notify (thread-safe)
+                from .job_manager import JobState
+                completed_jobs = self.job_manager.get_unnotified_completed_jobs()
+                for job in completed_jobs:
+                    status_msg = "Done" if job.state == JobState.COMPLETED else f"Failed (exit {job.exit_code})"
+                    print(f"[{job.job_id}] {status_msg:12s} {job.command}")
+                    self.job_manager.mark_job_notified(job.job_id)
+
+                # Clean up notified jobs (like bash does after notification)
+                if completed_jobs:
+                    self.job_manager.cleanup_finished_jobs()
+
                 # Read command (possibly multiline)
                 try:
                     # Primary prompt
@@ -2512,6 +2594,9 @@ class Shell:
                 self.console.print(highlight=False)
                 self.multiline_buffer = []
                 continue
+
+        # Clean up background jobs before exiting
+        self.cleanup_jobs()
 
         # Save history before exiting
         # Use current value of HISTFILE variable (may have been changed during session)
