@@ -519,7 +519,7 @@ func (p *S3FSPlugin) Validate(cfg map[string]interface{}) error {
 	// Check for unknown parameters
 	allowedKeys := []string{
 		"bucket", "region", "access_key_id", "secret_access_key", "endpoint", "prefix", "disable_ssl", "mount_path",
-		"cache_enabled", "cache_ttl", "stat_cache_ttl", "cache_max_size",
+		"cache_enabled", "cache_ttl", "stat_cache_ttl", "cache_max_size", "use_path_request_style",
 	}
 	if err := config.ValidateOnlyKnownKeys(cfg, allowedKeys); err != nil {
 		return err
@@ -538,7 +538,7 @@ func (p *S3FSPlugin) Validate(cfg map[string]interface{}) error {
 	}
 
 	// Validate boolean parameters
-	for _, key := range []string{"disable_ssl", "cache_enabled"} {
+	for _, key := range []string{"disable_ssl", "use_path_request_style", "cache_enabled"} {
 		if err := config.ValidateBoolType(cfg, key); err != nil {
 			return err
 		}
@@ -559,6 +559,7 @@ func (p *S3FSPlugin) Initialize(config map[string]interface{}) error {
 		Endpoint:        getStringConfig(config, "endpoint", ""),
 		Prefix:          getStringConfig(config, "prefix", ""),
 		DisableSSL:      getBoolConfig(config, "disable_ssl", false),
+		UsePathStyle:    getBoolConfig(config, "use_path_request_style", false),
 	}
 
 	if cfg.Bucket == "" {
@@ -644,6 +645,13 @@ func (p *S3FSPlugin) GetConfigParams() []plugin.ConfigParameter {
 			Description: "Disable SSL for S3 connections",
 		},
 		{
+			Name:        "use_path_request_style",
+			Type:        "bool",
+			Required:    false,
+			Default:     "false",
+			Description: "Use path-style requests instead of virtual-hosted-style (required for MinIO and some S3-compatible services)",
+		},
+		{
 			Name:        "cache_enabled",
 			Type:        "bool",
 			Required:    false,
@@ -718,6 +726,7 @@ CONFIGURATION:
     secret_access_key = "minioadmin"
     endpoint = "http://localhost:9000"
     disable_ssl = true
+    use_path_request_style = true  # Required for MinIO and some S3-compatible services
 
   Multiple S3 Buckets:
   [plugins.s3fs_prod]

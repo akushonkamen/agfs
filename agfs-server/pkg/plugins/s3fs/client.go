@@ -41,6 +41,18 @@ type S3Config struct {
 	Endpoint        string // Optional custom endpoint (for S3-compatible services)
 	Prefix          string // Optional prefix for all keys (will be wrapped for isolation)
 	DisableSSL      bool   // For testing with local S3
+	UsePathStyle    bool   // Use path-style requests (required for MinIO and some S3-compatible services)
+}
+
+// checkBucketAccess verifies that the bucket exists and is accessible
+// Uses ListObjectsV2 instead of HeadBucket for better compatibility
+// Some S3-compatible services (e.g., certain object storage providers) don't support HeadBucket
+func checkBucketAccess(ctx context.Context, client *s3.Client, bucket string) error {
+	_, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucket),
+		MaxKeys: aws.Int32(1), // Only need to check if we can access the bucket
+	})
+	return err
 }
 
 // NewS3Client creates a new S3 client
@@ -74,17 +86,21 @@ func NewS3Client(cfg S3Config) (*S3Client, error) {
 	if cfg.Endpoint != "" {
 		clientOpts = append(clientOpts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
-			o.UsePathStyle = true // Required for MinIO and some S3-compatible services
+		})
+	}
+
+	// Set path-style requests if configured (required for MinIO and some S3-compatible services)
+	if cfg.UsePathStyle {
+		clientOpts = append(clientOpts, func(o *s3.Options) {
+			o.UsePathStyle = true
 		})
 	}
 
 	client := s3.NewFromConfig(awsCfg, clientOpts...)
 
-	// Verify bucket exists
-	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: aws.String(cfg.Bucket),
-	})
-	if err != nil {
+	// Verify bucket exists using ListObjectsV2 (more compatible than HeadBucket)
+	// Some object storage services don't support HeadBucket
+	if err = checkBucketAccess(ctx, client, cfg.Bucket); err != nil {
 		return nil, fmt.Errorf("failed to access bucket %s: %w", cfg.Bucket, err)
 	}
 
