@@ -113,7 +113,6 @@ def cmd_grep(process: Process) -> int:
     show_filename = None  # None = auto, True = force, False = suppress
 
     args = process.args[:]
-    options = []
 
     while args and args[0].startswith('-') and args[0] != '-':
         opt = args.pop(0)
@@ -174,7 +173,7 @@ def cmd_grep(process: Process) -> int:
         for filepath in files:
             try:
                 # Read file content
-                content = process.filesystem.read_file(filepath)
+                content = process.context.filesystem.read_file(filepath)
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
 

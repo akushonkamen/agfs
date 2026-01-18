@@ -45,12 +45,12 @@ def cmd_ln(process: Process) -> int:
         link_name = os.path.normpath(link_name)
 
     try:
-        process.filesystem.symlink(target, link_name)
+        process.context.filesystem.symlink(target, link_name)
         return 0
     except Exception as e:
         error_msg = str(e)
         if "not supported" in error_msg.lower() or "not implemented" in error_msg.lower():
-            process.stderr.write(f"ln: symbolic links not supported by this filesystem\n")
+            process.stderr.write("ln: symbolic links not supported by this filesystem\n")
         elif "already exists" in error_msg.lower():
             process.stderr.write(f"ln: {link_name}: File exists\n")
         else:

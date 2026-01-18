@@ -1,7 +1,6 @@
 """Shell command parser for pipeline syntax"""
 
 import shlex
-import re
 from typing import List, Tuple, Dict, Optional
 
 
@@ -313,7 +312,7 @@ class CommandParser:
             # Use shlex to properly handle quoted strings
             try:
                 tokens = shlex.split(part)
-            except ValueError as e:
+            except ValueError:
                 # If shlex fails (unmatched quotes), fall back to simple split
                 tokens = part.split()
 

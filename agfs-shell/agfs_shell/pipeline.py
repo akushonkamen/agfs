@@ -5,7 +5,7 @@ import queue
 import io
 from typing import List, Union
 from .process import Process
-from .streams import InputStream, OutputStream, ErrorStream
+from .streams import InputStream, OutputStream
 from .control_flow import ControlFlowException
 
 

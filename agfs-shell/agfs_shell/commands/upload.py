@@ -45,7 +45,7 @@ def cmd_upload(process: Process) -> int:
 
         # Check if destination is a directory
         try:
-            dest_info = process.filesystem.get_file_info(agfs_path)
+            dest_info = process.context.filesystem.get_file_info(agfs_path)
             if dest_info.get('isDir', False):
                 # Destination is a directory, append source filename
                 source_basename = os.path.basename(local_path)
@@ -79,7 +79,7 @@ def _upload_file(process: Process, local_path: str, agfs_path: str, show_progres
     try:
         with open(local_path, 'rb') as f:
             data = f.read()
-            process.filesystem.write_file(agfs_path, data, append=False)
+            process.context.filesystem.write_file(agfs_path, data, append=False)
 
         if show_progress:
             process.stdout.write(f"Uploaded {len(data)} bytes to {agfs_path}\n")
@@ -93,12 +93,11 @@ def _upload_file(process: Process, local_path: str, agfs_path: str, show_progres
 
 def _upload_dir(process: Process, local_path: str, agfs_path: str) -> int:
     """Helper: Upload a directory recursively to AGFS"""
-    import stat as stat_module
 
     try:
         # Create target directory in AGFS if it doesn't exist
         try:
-            info = process.filesystem.get_file_info(agfs_path)
+            info = process.context.filesystem.get_file_info(agfs_path)
             if not info.get('isDir', False):
                 process.stderr.write(f"upload: {agfs_path}: Not a directory\n")
                 return 1
@@ -106,8 +105,7 @@ def _upload_dir(process: Process, local_path: str, agfs_path: str) -> int:
             # Directory doesn't exist, create it
             try:
                 # Use mkdir command to create directory
-                from pyagfs import AGFSClient
-                process.filesystem.client.mkdir(agfs_path)
+                process.context.filesystem.client.mkdir(agfs_path)
             except Exception as e:
                 process.stderr.write(f"upload: cannot create directory {agfs_path}: {str(e)}\n")
                 return 1
@@ -127,7 +125,7 @@ def _upload_dir(process: Process, local_path: str, agfs_path: str) -> int:
                 dir_agfs_path = os.path.join(current_agfs_dir, dirname)
                 dir_agfs_path = os.path.normpath(dir_agfs_path)
                 try:
-                    process.filesystem.client.mkdir(dir_agfs_path)
+                    process.context.filesystem.client.mkdir(dir_agfs_path)
                 except Exception:
                     # Directory might already exist, ignore
                     pass

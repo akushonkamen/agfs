@@ -5,6 +5,7 @@ RM command - remove file or directory.
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
+from .base import handle_filesystem_error
 
 
 @command(needs_path_resolution=True)
@@ -19,7 +20,7 @@ def cmd_rm(process: Process) -> int:
         process.stderr.write("rm: missing operand\n")
         return 1
 
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("rm: filesystem not available\n")
         return 1
 
@@ -41,10 +42,9 @@ def cmd_rm(process: Process) -> int:
     for path in paths:
         try:
             # Use AGFS client to remove file/directory
-            process.filesystem.client.rm(path, recursive=recursive)
+            process.context.filesystem.client.rm(path, recursive=recursive)
         except Exception as e:
-            error_msg = str(e)
-            process.stderr.write(f"rm: {path}: {error_msg}\n")
-            exit_code = 1
+            # handle_filesystem_error returns 1, so we just capture it
+            exit_code = handle_filesystem_error(process, e, path)
 
     return exit_code

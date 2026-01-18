@@ -5,6 +5,7 @@ MKDIR command - create directory.
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
+from .base import handle_filesystem_error
 
 
 @command(needs_path_resolution=True)
@@ -19,7 +20,7 @@ def cmd_mkdir(process: Process) -> int:
         process.stderr.write("mkdir: missing operand\n")
         return 1
 
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("mkdir: filesystem not available\n")
         return 1
 
@@ -27,9 +28,7 @@ def cmd_mkdir(process: Process) -> int:
 
     try:
         # Use AGFS client to create directory
-        process.filesystem.client.mkdir(path)
+        process.context.filesystem.client.mkdir(path)
         return 0
     except Exception as e:
-        error_msg = str(e)
-        process.stderr.write(f"mkdir: {path}: {error_msg}\n")
-        return 1
+        return handle_filesystem_error(process, e, path)

@@ -31,7 +31,7 @@ def _parse_cut_list(list_str: str) -> List:
             end = int(end_str) if end_str else None
 
             if start < 1:
-                raise ValueError(f"fields and positions are numbered from 1")
+                raise ValueError("fields and positions are numbered from 1")
 
             if end is not None and end < start:
                 raise ValueError(f"invalid range: {part}")
@@ -46,7 +46,7 @@ def _parse_cut_list(list_str: str) -> List:
 
             end = int(end_str)
             if end < 1:
-                raise ValueError(f"fields and positions are numbered from 1")
+                raise ValueError("fields and positions are numbered from 1")
 
             ranges.append((1, end))
 
@@ -54,7 +54,7 @@ def _parse_cut_list(list_str: str) -> List:
             # Single number like "3"
             num = int(part)
             if num < 1:
-                raise ValueError(f"fields and positions are numbered from 1")
+                raise ValueError("fields and positions are numbered from 1")
 
             ranges.append((num, num))
 

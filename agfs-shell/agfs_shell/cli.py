@@ -194,9 +194,9 @@ def main():
         try:
             from .webapp_server import run_server
             run_server(shell, host=args.webapp_host, port=args.webapp_port)
-        except ImportError as e:
-            sys.stderr.write(f"Error: Web app dependencies not installed.\n")
-            sys.stderr.write(f"Install with: uv sync --extra webapp\n")
+        except ImportError:
+            sys.stderr.write("Error: Web app dependencies not installed.\n")
+            sys.stderr.write("Install with: uv sync --extra webapp\n")
             sys.exit(1)
         except Exception as e:
             sys.stderr.write(f"Error starting web app: {e}\n")

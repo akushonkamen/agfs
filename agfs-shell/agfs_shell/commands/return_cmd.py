@@ -7,7 +7,6 @@ Note: Module name is return_cmd.py because 'return' is a Python keyword.
 from ..process import Process
 from ..command_decorators import command
 from ..control_flow import ReturnException
-from ..exit_codes import EXIT_CODE_RETURN
 from . import register_command
 
 

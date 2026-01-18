@@ -137,7 +137,7 @@ def cmd_fsgrep(process: Process) -> int:
 
     try:
         # Call server-side grep (no need to stat path first)
-        result = process.filesystem.grep(
+        result = process.context.filesystem.grep(
             path=path,
             pattern=pattern,
             recursive=recursive,

@@ -38,10 +38,9 @@ def cmd_ls(process: Process) -> int:
 
     # Default to current working directory if no paths specified
     if not paths:
-        cwd = getattr(process, 'cwd', '/')
-        paths = [cwd]
+        paths = [process.context.cwd]
 
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("ls: filesystem not available\n")
         return 1
 
@@ -60,8 +59,8 @@ def cmd_ls(process: Process) -> int:
         symlink_target = None
         if is_symlink and full_path:
             try:
-                symlink_target = process.filesystem.readlink(full_path)
-            except:
+                symlink_target = process.context.filesystem.readlink(full_path)
+            except Exception:
                 # If readlink fails, just show as regular file
                 pass
 
@@ -139,12 +138,12 @@ def cmd_ls(process: Process) -> int:
         for path in paths:
             try:
                 # First, get info about the path to determine if it's a file or directory
-                path_info = process.filesystem.get_file_info(path)
+                path_info = process.context.filesystem.get_file_info(path)
                 is_directory = path_info.get('isDir', False) or path_info.get('type') == 'directory'
 
                 if is_directory:
                     # It's a directory - list its contents
-                    files = process.filesystem.list_directory(path)
+                    files = process.context.filesystem.list_directory(path)
 
                     # Show directory name if multiple paths
                     if len(paths) > 1:

@@ -261,11 +261,12 @@ class ShellExecutor:
 
         Note: This doesn't execute the function, just stores it.
         """
-        self.shell.functions[stmt.name] = {
+        self.shell.function_registry.define_from_dict(stmt.name, {
             'name': stmt.name,
             'body': stmt.body,  # Store AST body
-            'is_ast': True  # Flag to indicate AST-based function
-        }
+            'is_ast': True,  # Flag to indicate AST-based function
+            'params': []  # No explicit params for now
+        })
         return 0
 
     # ========================================================================
@@ -290,10 +291,10 @@ class ShellExecutor:
         Returns:
             Exit code from the function
         """
-        if func_name not in self.shell.functions:
+        if not self.shell.function_registry.exists(func_name):
             return 127
 
-        func_def = self.shell.functions[func_name]
+        func_def = self.shell.function_registry.get_as_dict(func_name)
 
         # Save current positional parameters
         saved_params = {}

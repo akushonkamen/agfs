@@ -2,11 +2,8 @@
 
 import asyncio
 import json
-import os
 import sys
-import io
 from pathlib import Path
-from typing import Optional
 
 try:
     from aiohttp import web
@@ -14,6 +11,9 @@ try:
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
+
+# Import BufferedTextIO utility
+from .utils.io_wrappers import BufferedTextIO
 
 
 class ShellSession:
@@ -57,35 +57,7 @@ class ShellSession:
 
     async def handle_command(self, command: str):
         """Execute a command and send output to WebSocket"""
-        # Create a wrapper that has both text and binary interfaces
-        class BufferedTextIO:
-            def __init__(self):
-                self.text_buffer = io.StringIO()
-                self.byte_buffer = io.BytesIO()
-                # Create buffer attribute for binary writes
-                self.buffer = self
-
-            def write(self, data):
-                if isinstance(data, bytes):
-                    self.byte_buffer.write(data)
-                else:
-                    self.text_buffer.write(data)
-                return len(data)
-
-            def flush(self):
-                pass
-
-            def getvalue(self):
-                text = self.text_buffer.getvalue()
-                binary = self.byte_buffer.getvalue()
-                if binary:
-                    try:
-                        text += binary.decode('utf-8', errors='replace')
-                    except:
-                        pass
-                return text
-
-        # Capture stdout and stderr
+        # Capture stdout and stderr using BufferedTextIO
         old_stdout = sys.stdout
         old_stderr = sys.stderr
         stdout_buffer = BufferedTextIO()
@@ -218,34 +190,7 @@ class WebAppServer:
             )
 
         try:
-            # Use BufferedTextIO to handle both text and binary output
-            class BufferedTextIO:
-                def __init__(self):
-                    self.text_buffer = io.StringIO()
-                    self.byte_buffer = io.BytesIO()
-                    self.buffer = self
-
-                def write(self, data):
-                    if isinstance(data, bytes):
-                        self.byte_buffer.write(data)
-                    else:
-                        self.text_buffer.write(data)
-                    return len(data)
-
-                def flush(self):
-                    pass
-
-                def getvalue(self):
-                    text = self.text_buffer.getvalue()
-                    binary = self.byte_buffer.getvalue()
-                    if binary:
-                        try:
-                            text += binary.decode('utf-8', errors='replace')
-                        except:
-                            pass
-                    return text
-
-            # Capture output
+            # Capture output using BufferedTextIO
             old_stdout = sys.stdout
             old_stderr = sys.stderr
             stdout_buffer = BufferedTextIO()
@@ -460,7 +405,7 @@ class WebAppServer:
 
                             if command.strip():
                                 # Execute command
-                                exit_code = await session.handle_command(command)
+                                _exit_code = await session.handle_command(command)
 
                                 # Send new prompt
                                 await session.send('$ ')
@@ -521,7 +466,7 @@ class WebAppServer:
                                     'type': 'completions',
                                     'completions': completions
                                 })
-                            except Exception as e:
+                            except Exception:
                                 # Send empty completions on error
                                 await ws.send_json({
                                     'type': 'completions',

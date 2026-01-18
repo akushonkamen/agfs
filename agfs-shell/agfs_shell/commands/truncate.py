@@ -29,7 +29,7 @@ def cmd_truncate(process: Process) -> int:
       truncate -s 1024 file.txt     # Truncate/extend file to 1024 bytes
       truncate --size=100 f1 f2     # Truncate multiple files to 100 bytes
     """
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("truncate: filesystem not available\n")
         return 1
 
@@ -95,7 +95,7 @@ def cmd_truncate(process: Process) -> int:
     exit_code = 0
     for path in files:
         try:
-            process.filesystem.client.truncate(path, size)
+            process.context.filesystem.client.truncate(path, size)
         except Exception as e:
             error_msg = str(e)
             process.stderr.write(f"truncate: {path}: {error_msg}\n")

@@ -2,6 +2,8 @@
 TREE command - (auto-migrated from builtins.py)
 """
 
+import os
+
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
@@ -28,7 +30,7 @@ def _print_tree(process, path, prefix, is_last, max_depth, current_depth, dirs_o
 
     try:
         # List directory contents
-        entries = process.filesystem.list_directory(path)
+        entries = process.context.filesystem.list_directory(path)
 
         # Filter entries
         filtered_entries = []
@@ -181,13 +183,13 @@ def cmd_tree(process: Process) -> int:
     if path is None:
         path = getattr(process, 'cwd', '/')
 
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("tree: filesystem not available\n")
         return 1
 
     # Check if path exists
     try:
-        info = process.filesystem.get_file_info(path)
+        info = process.context.filesystem.get_file_info(path)
         is_dir = info.get('isDir', False) or info.get('type') == 'directory'
 
         if not is_dir:
@@ -246,7 +248,7 @@ def _print_tree(process, path, prefix, is_last, max_depth, current_depth, dirs_o
 
     try:
         # List directory contents
-        entries = process.filesystem.list_directory(path)
+        entries = process.context.filesystem.list_directory(path)
 
         # Filter entries
         filtered_entries = []

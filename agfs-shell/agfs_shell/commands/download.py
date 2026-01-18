@@ -2,6 +2,8 @@
 DOWNLOAD command - (auto-migrated from builtins.py)
 """
 
+import os
+
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
@@ -37,7 +39,7 @@ def cmd_download(process: Process) -> int:
 
     try:
         # Check if source path is a directory
-        info = process.filesystem.get_file_info(agfs_path)
+        info = process.context.filesystem.get_file_info(agfs_path)
 
         # Check if destination is a local directory
         if os.path.isdir(local_path):
@@ -73,7 +75,7 @@ def cmd_download(process: Process) -> int:
 def _download_file(process: Process, agfs_path: str, local_path: str, show_progress: bool = True) -> int:
     """Helper: Download a single file from AGFS"""
     try:
-        stream = process.filesystem.read_file(agfs_path, stream=True)
+        stream = process.context.filesystem.read_file(agfs_path, stream=True)
         bytes_written = 0
 
         with open(local_path, 'wb') as f:
@@ -99,7 +101,7 @@ def _download_dir(process: Process, agfs_path: str, local_path: str) -> int:
         os.makedirs(local_path, exist_ok=True)
 
         # List AGFS directory
-        entries = process.filesystem.list_directory(agfs_path)
+        entries = process.context.filesystem.list_directory(agfs_path)
 
         for entry in entries:
             name = entry['name']

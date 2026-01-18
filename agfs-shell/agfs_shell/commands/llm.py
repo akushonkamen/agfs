@@ -120,8 +120,8 @@ def cmd_llm(process: Process) -> int:
     # Load configuration from file if it exists
     config = {}
     try:
-        if process.filesystem:
-            config_content = process.filesystem.read_file(config_path)
+        if process.context.filesystem:
+            config_content = process.context.filesystem.read_file(config_path)
             if config_content:
                 try:
                     import yaml
@@ -241,8 +241,8 @@ def cmd_llm(process: Process) -> int:
     # If input file is specified, read from file
     if input_file:
         try:
-            if process.filesystem:
-                stdin_binary = process.filesystem.read_file(input_file)
+            if process.context.filesystem:
+                stdin_binary = process.context.filesystem.read_file(input_file)
             else:
                 with open(input_file, 'rb') as f:
                     stdin_binary = f.read()

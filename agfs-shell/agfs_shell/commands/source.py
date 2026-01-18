@@ -36,7 +36,7 @@ def cmd_source(process: Process) -> int:
         process.stderr.write("source: usage: source FILENAME [ARGUMENTS...]\n")
         return 2
 
-    if not process.shell:
+    if not process.context._shell:
         process.stderr.write("source: shell context not available\n")
         return 1
 

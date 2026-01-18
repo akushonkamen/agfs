@@ -1,7 +1,7 @@
 import unittest
 import tempfile
 import os
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 from agfs_shell.builtins import BUILTINS
 from agfs_shell.process import Process
 from agfs_shell.streams import InputStream, OutputStream, ErrorStream

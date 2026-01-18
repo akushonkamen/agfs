@@ -72,7 +72,7 @@ def cmd_help(process: Process) -> int:
             categorized.update(cmd_list)
         uncategorized = [cmd for cmd in commands if cmd not in categorized]
         if uncategorized:
-            process.stdout.write(f"\033[1;36mOther:\033[0m\n")
+            process.stdout.write("\033[1;36mOther:\033[0m\n")
             for cmd in uncategorized:
                 func = BUILTINS[cmd]
                 if func.__doc__:

@@ -25,7 +25,7 @@ def cmd_unalias(process: Process) -> int:
         unalias ll la       # Remove multiple aliases
         unalias -a          # Remove all aliases
     """
-    if not process.shell:
+    if not process.context._shell:
         process.stderr.write(b"unalias: shell context not available\n")
         return 1
 

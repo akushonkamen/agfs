@@ -6,6 +6,7 @@ import sys
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
+from .base import handle_filesystem_error
 
 
 @command(needs_path_resolution=True, supports_streaming=True)
@@ -41,9 +42,9 @@ def cmd_cat(process: Process) -> int:
         # Read from files in streaming mode
         for filename in process.args:
             try:
-                if process.filesystem:
+                if process.context.filesystem:
                     # Stream file in chunks
-                    stream = process.filesystem.read_file(filename, stream=True)
+                    stream = process.context.filesystem.read_file(filename, stream=True)
                     try:
                         for chunk in stream:
                             if chunk:
@@ -62,11 +63,5 @@ def cmd_cat(process: Process) -> int:
                             process.stdout.write(chunk)
                             process.stdout.flush()
             except Exception as e:
-                # Extract meaningful error message
-                error_msg = str(e)
-                if "No such file or directory" in error_msg or "not found" in error_msg.lower():
-                    process.stderr.write(f"cat: {filename}: No such file or directory\n")
-                else:
-                    process.stderr.write(f"cat: {filename}: {error_msg}\n")
-                return 1
+                return handle_filesystem_error(process, e, filename)
     return 0

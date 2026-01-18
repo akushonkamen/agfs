@@ -32,7 +32,7 @@ class ShellCompleter:
             import readline
             line = readline.get_line_buffer()
             begin_idx = readline.get_begidx()
-            end_idx = readline.get_endidx()
+            _end_idx = readline.get_endidx()
 
             # Determine if we're completing a command or a path
             if begin_idx == 0 or line[:begin_idx].strip() == '':

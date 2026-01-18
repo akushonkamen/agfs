@@ -6,7 +6,7 @@ in a structured, type-safe manner.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Union
 
 
 @dataclass

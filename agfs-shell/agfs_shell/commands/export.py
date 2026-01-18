@@ -14,12 +14,14 @@ def cmd_export(process: Process) -> int:
     Set or display environment variables
 
     Usage: export [VAR=value ...]
+
+    Note:
+        Uses process.context.set_variable() instead of direct env manipulation.
     """
     if not process.args:
         # Display all environment variables (like 'env')
-        if hasattr(process, 'env'):
-            for key, value in sorted(process.env.items()):
-                process.stdout.write(f"{key}={value}\n".encode('utf-8'))
+        for key, value in sorted(process.context.env.items()):
+            process.stdout.write(f"{key}={value}\n".encode('utf-8'))
         return 0
 
     # Set environment variables
@@ -31,13 +33,12 @@ def cmd_export(process: Process) -> int:
 
             # Validate variable name
             if var_name and var_name.replace('_', '').replace('-', '').isalnum():
-                if hasattr(process, 'env'):
-                    process.env[var_name] = var_value
+                process.context.set_variable(var_name, var_value)
             else:
                 process.stderr.write(f"export: invalid variable name: {var_name}\n")
                 return 1
         else:
-            process.stderr.write(f"export: usage: export VAR=value\n")
+            process.stderr.write("export: usage: export VAR=value\n")
             return 1
 
     return 0

@@ -38,7 +38,7 @@ def cmd_plugins(process: Process) -> int:
         plugins load https://example.com/myplugin.so  # Load from HTTP(S)
         plugins unload /mnt/plugins/myplugin.so       # Unload plugin
     """
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("plugins: filesystem not available\n")
         return 1
 
@@ -98,7 +98,7 @@ def cmd_plugins(process: Process) -> int:
 
         try:
             # Load the plugin
-            result = process.filesystem.client.load_plugin(library_path)
+            result = process.context.filesystem.client.load_plugin(library_path)
             plugin_name = result.get("plugin_name", "unknown")
             process.stdout.write(f"Loaded external plugin: {plugin_name}\n")
             process.stdout.write(f"  Source: {path}\n")
@@ -116,7 +116,7 @@ def cmd_plugins(process: Process) -> int:
         library_path = process.args[1]
 
         try:
-            process.filesystem.client.unload_plugin(library_path)
+            process.context.filesystem.client.unload_plugin(library_path)
             process.stdout.write(f"Unloaded external plugin: {library_path}\n")
             return 0
         except Exception as e:
@@ -130,7 +130,7 @@ def cmd_plugins(process: Process) -> int:
             verbose = '-v' in process.args[1:] or '--verbose' in process.args[1:]
 
             # Use new API to get detailed plugin information
-            plugins_info = process.filesystem.client.get_plugins_info()
+            plugins_info = process.context.filesystem.client.get_plugins_info()
 
             # Separate builtin and external plugins
             builtin_plugins = [p for p in plugins_info if not p.get('is_external', False)]
@@ -159,7 +159,7 @@ def cmd_plugins(process: Process) -> int:
 
                     # Show config params if verbose and available
                     if verbose and config_params:
-                        process.stdout.write(f"    Config parameters:\n")
+                        process.stdout.write("    Config parameters:\n")
                         for param in config_params:
                             req = "*" if param.get('required', False) else " "
                             name = param.get('name', '')
@@ -196,11 +196,11 @@ def cmd_plugins(process: Process) -> int:
                                 mount_list.append(path)
                         process.stdout.write(f"    Mounted at: {', '.join(mount_list)}\n")
                     else:
-                        process.stdout.write(f"    (Not currently mounted)\n")
+                        process.stdout.write("    (Not currently mounted)\n")
 
                     # Show config params if verbose and available
                     if verbose and config_params:
-                        process.stdout.write(f"    Config parameters:\n")
+                        process.stdout.write("    Config parameters:\n")
                         for param in config_params:
                             req = "*" if param.get('required', False) else " "
                             name = param.get('name', '')

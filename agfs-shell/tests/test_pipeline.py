@@ -1,7 +1,6 @@
 import unittest
 from agfs_shell.pipeline import Pipeline
 from agfs_shell.process import Process
-from agfs_shell.streams import InputStream, OutputStream, ErrorStream
 
 class TestPipeline(unittest.TestCase):
     def create_mock_process(self, name, output=None, exit_code=0):

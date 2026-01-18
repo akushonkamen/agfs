@@ -2,9 +2,12 @@
 MV command - (auto-migrated from builtins.py)
 """
 
+import os
+
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
+from .cp import _upload_dir, _download_dir, _cp_agfs_dir
 
 
 @command(needs_path_resolution=True)
@@ -114,11 +117,11 @@ def cmd_mv(process: Process) -> int:
                 return 1
         else:
             try:
-                dest_info = process.filesystem.get_file_info(dest_path)
+                dest_info = process.context.filesystem.get_file_info(dest_path)
                 if not (dest_info.get('isDir', False) or dest_info.get('type') == 'directory'):
                     process.stderr.write(f"mv: target '{dest}' is not a directory\n")
                     return 1
-            except:
+            except Exception:
                 process.stderr.write(f"mv: target '{dest}' is not a directory\n")
                 return 1
 
@@ -166,10 +169,10 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
         dest_is_dir = os.path.isdir(dest_path)
     else:
         try:
-            dest_info = process.filesystem.get_file_info(dest_path)
+            dest_info = process.context.filesystem.get_file_info(dest_path)
             dest_exists = True
             dest_is_dir = dest_info.get('isDir', False) or dest_info.get('type') == 'directory'
-        except:
+        except Exception:
             dest_exists = False
             dest_is_dir = False
 
@@ -188,9 +191,9 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
         final_dest_exists = os.path.exists(final_dest)
     else:
         try:
-            process.filesystem.get_file_info(final_dest)
+            process.context.filesystem.get_file_info(final_dest)
             final_dest_exists = True
-        except:
+        except Exception:
             final_dest_exists = False
 
     # Handle overwrite protection
@@ -207,7 +210,7 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
                 response = sys.stdin.readline().strip().lower()
                 if response not in ['y', 'yes']:
                     return 0
-            except:
+            except Exception:
                 return 0
 
     # Perform the move operation based on source and dest types
@@ -232,14 +235,14 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
                 # Move file
                 with open(source_path, 'rb') as f:
                     data = f.read()
-                    process.filesystem.write_file(final_dest, data, append=False)
+                    process.context.filesystem.write_file(final_dest, data, append=False)
                 # Delete local file after successful upload
                 os.remove(source_path)
                 return 0
 
         elif not source_is_local and dest_is_local:
             # AGFS to local - download then delete AGFS
-            source_info = process.filesystem.get_file_info(source_path)
+            source_info = process.context.filesystem.get_file_info(source_path)
             is_dir = source_info.get('isDir', False) or source_info.get('type') == 'directory'
 
             if is_dir:
@@ -247,29 +250,29 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
                 result = _download_dir(process, source_path, final_dest)
                 if result == 0:
                     # Delete AGFS directory after successful download
-                    process.filesystem.client.rm(source_path, recursive=True)
+                    process.context.filesystem.client.rm(source_path, recursive=True)
                 return result
             else:
                 # Move file
-                stream = process.filesystem.read_file(source_path, stream=True)
+                stream = process.context.filesystem.read_file(source_path, stream=True)
                 with open(final_dest, 'wb') as f:
                     for chunk in stream:
                         if chunk:
                             f.write(chunk)
                 # Delete AGFS file after successful download
-                process.filesystem.client.rm(source_path, recursive=False)
+                process.context.filesystem.client.rm(source_path, recursive=False)
                 return 0
 
         else:
             # AGFS to AGFS - use rename if supported, otherwise copy + delete
             # Check if source exists
-            source_info = process.filesystem.get_file_info(source_path)
+            source_info = process.context.filesystem.get_file_info(source_path)
 
             # Try to use AGFS rename/move if available
-            if hasattr(process.filesystem.client, 'rename'):
-                process.filesystem.client.rename(source_path, final_dest)
-            elif hasattr(process.filesystem.client, 'mv'):
-                process.filesystem.client.mv(source_path, final_dest)
+            if hasattr(process.context.filesystem.client, 'rename'):
+                process.context.filesystem.client.rename(source_path, final_dest)
+            elif hasattr(process.context.filesystem.client, 'mv'):
+                process.context.filesystem.client.mv(source_path, final_dest)
             else:
                 # Fallback: copy then delete
                 is_dir = source_info.get('isDir', False) or source_info.get('type') == 'directory'
@@ -280,13 +283,13 @@ def _mv_single(process, source_path, dest_path, source_is_local, dest_is_local,
                     if result != 0:
                         return result
                     # Delete source directory
-                    process.filesystem.client.rm(source_path, recursive=True)
+                    process.context.filesystem.client.rm(source_path, recursive=True)
                 else:
                     # Copy file
-                    data = process.filesystem.read_file(source_path, stream=False)
-                    process.filesystem.write_file(final_dest, data, append=False)
+                    data = process.context.filesystem.read_file(source_path, stream=False)
+                    process.context.filesystem.write_file(final_dest, data, append=False)
                     # Delete source file
-                    process.filesystem.client.rm(source_path, recursive=False)
+                    process.context.filesystem.client.rm(source_path, recursive=False)
 
             return 0
 

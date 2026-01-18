@@ -3,8 +3,9 @@
 from typing import List, Optional, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .filesystem import AGFSFileSystem
+    from .filesystem_interface import FileSystemInterface
     from .shell import Shell
+    from .context import CommandContext
 
 from .streams import InputStream, OutputStream, ErrorStream
 from .control_flow import ControlFlowException
@@ -21,7 +22,10 @@ class Process:
         stdout: Optional[OutputStream] = None,
         stderr: Optional[ErrorStream] = None,
         executor: Optional[Callable] = None,
-        filesystem: Optional['AGFSFileSystem'] = None,
+        # NEW: CommandContext parameter (preferred way)
+        context: Optional['CommandContext'] = None,
+        # OLD: Legacy parameters (for backward compatibility)
+        filesystem: Optional['FileSystemInterface'] = None,
         env: Optional[dict] = None,
         shell: Optional['Shell'] = None
     ):
@@ -35,9 +39,15 @@ class Process:
             stdout: Output stream
             stderr: Error stream
             executor: Callable that executes the command
-            filesystem: AGFS file system instance for file operations
-            env: Environment variables dictionary
-            shell: Shell instance for commands that need shell access (e.g., source)
+            context: CommandContext with all execution context (preferred)
+            filesystem: AGFS file system instance (legacy, for backward compatibility)
+            env: Environment variables dictionary (legacy, for backward compatibility)
+            shell: Shell instance (legacy, for backward compatibility)
+
+        Note:
+            If context is provided, it will be used directly.
+            Otherwise, a context will be created from the legacy parameters.
+            Commands should prefer using process.context instead of process.shell.
         """
         self.command = command
         self.args = args
@@ -45,10 +55,93 @@ class Process:
         self.stdout = stdout or OutputStream.to_buffer()
         self.stderr = stderr or ErrorStream.to_buffer()
         self.executor = executor
-        self.filesystem = filesystem
-        self.env = env or {}
-        self.shell = shell
+
+        # Initialize context
+        if context is not None:
+            # Use provided context
+            self.context = context
+        else:
+            # Backward compatibility: create context from legacy parameters
+            from .context import CommandContext
+
+            self.context = CommandContext(
+                cwd=shell.cwd if shell else '/',
+                env=env or {},
+                filesystem=filesystem,
+                functions=shell.functions if shell else {},
+                aliases=shell.aliases if shell else {},
+                local_scopes=shell.local_scopes if shell else [],
+                _shell=shell
+            )
+
+        # Backward compatibility properties
+        # Commands should migrate to use self.context instead
+        self._filesystem = filesystem
+        self._env = env
+        self._shell = shell
+
         self.exit_code = 0
+
+    # Backward compatibility properties
+
+    @property
+    def filesystem(self):
+        """
+        Get filesystem from context (backward compatibility).
+
+        Deprecated: Use process.context.filesystem instead.
+        """
+        return self.context.filesystem
+
+    @filesystem.setter
+    def filesystem(self, value):
+        """Set filesystem in context"""
+        self.context.filesystem = value
+        self._filesystem = value
+
+    @property
+    def env(self):
+        """
+        Get environment variables from context (backward compatibility).
+
+        Deprecated: Use process.context.env instead.
+        """
+        return self.context.env
+
+    @env.setter
+    def env(self, value):
+        """Set env in context"""
+        self.context.env = value
+        self._env = value
+
+    @property
+    def shell(self):
+        """
+        Get shell reference from context (backward compatibility).
+
+        Deprecated: Use process.context methods instead of accessing shell.
+        """
+        return self.context._shell
+
+    @shell.setter
+    def shell(self, value):
+        """Set shell in context"""
+        self.context._shell = value
+        self._shell = value
+
+    @property
+    def cwd(self):
+        """
+        Get current working directory from context (backward compatibility).
+
+        Deprecated: Use process.context.cwd instead.
+        """
+        return self.context.cwd
+
+    @cwd.setter
+    def cwd(self, value):
+        """Set cwd in context"""
+        self.context.cwd = value
 
     def execute(self) -> int:
         """

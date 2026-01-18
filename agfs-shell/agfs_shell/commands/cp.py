@@ -6,16 +6,17 @@ import os
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
+from .upload import _upload_file
+from .download import _download_file
 
 
 def _upload_dir(process: Process, local_path: str, agfs_path: str) -> int:
     """Helper: Upload a directory recursively to AGFS"""
-    import stat as stat_module
 
     try:
         # Create target directory in AGFS if it doesn't exist
         try:
-            info = process.filesystem.get_file_info(agfs_path)
+            info = process.context.filesystem.get_file_info(agfs_path)
             if not info.get('isDir', False):
                 process.stderr.write(f"upload: {agfs_path}: Not a directory\n")
                 return 1
@@ -23,8 +24,7 @@ def _upload_dir(process: Process, local_path: str, agfs_path: str) -> int:
             # Directory doesn't exist, create it
             try:
                 # Use mkdir command to create directory
-                from pyagfs import AGFSClient
-                process.filesystem.client.mkdir(agfs_path)
+                process.context.filesystem.client.mkdir(agfs_path)
             except Exception as e:
                 process.stderr.write(f"upload: cannot create directory {agfs_path}: {str(e)}\n")
                 return 1
@@ -44,7 +44,7 @@ def _upload_dir(process: Process, local_path: str, agfs_path: str) -> int:
                 dir_agfs_path = os.path.join(current_agfs_dir, dirname)
                 dir_agfs_path = os.path.normpath(dir_agfs_path)
                 try:
-                    process.filesystem.client.mkdir(dir_agfs_path)
+                    process.context.filesystem.client.mkdir(dir_agfs_path)
                 except Exception:
                     # Directory might already exist, ignore
                     pass
@@ -75,7 +75,7 @@ def _download_dir(process: Process, agfs_path: str, local_path: str) -> int:
         os.makedirs(local_path, exist_ok=True)
 
         # List AGFS directory
-        entries = process.filesystem.list_directory(agfs_path)
+        entries = process.context.filesystem.list_directory(agfs_path)
 
         for entry in entries:
             name = entry['name']
@@ -117,7 +117,7 @@ def _cp_upload(process: Process, local_path: str, agfs_path: str, recursive: boo
 
         # Check if destination is a directory
         try:
-            dest_info = process.filesystem.get_file_info(agfs_path)
+            dest_info = process.context.filesystem.get_file_info(agfs_path)
             if dest_info.get('isDir', False):
                 # Destination is a directory, append source filename
                 source_basename = os.path.basename(local_path)
@@ -134,7 +134,7 @@ def _cp_upload(process: Process, local_path: str, agfs_path: str, recursive: boo
 
             # Upload file
             with open(local_path, 'rb') as f:
-                process.filesystem.write_file(agfs_path, f.read(), append=False)
+                process.context.filesystem.write_file(agfs_path, f.read(), append=False)
             return 0
 
         elif os.path.isdir(local_path):
@@ -160,7 +160,7 @@ def _cp_download(process: Process, agfs_path: str, local_path: str, recursive: b
     """
     try:
         # Check if source is a directory
-        info = process.filesystem.get_file_info(agfs_path)
+        info = process.context.filesystem.get_file_info(agfs_path)
 
         # Check if destination is a local directory
         if os.path.isdir(local_path):
@@ -180,7 +180,7 @@ def _cp_download(process: Process, agfs_path: str, local_path: str, recursive: b
             process.stdout.flush()
 
             # Download single file
-            stream = process.filesystem.read_file(agfs_path, stream=True)
+            stream = process.context.filesystem.read_file(agfs_path, stream=True)
             with open(local_path, 'wb') as f:
                 for chunk in stream:
                     if chunk:
@@ -209,11 +209,11 @@ def _cp_agfs(process: Process, source_path: str, dest_path: str, recursive: bool
     """
     try:
         # Check if source is a directory
-        info = process.filesystem.get_file_info(source_path)
+        info = process.context.filesystem.get_file_info(source_path)
 
         # Check if destination is a directory
         try:
-            dest_info = process.filesystem.get_file_info(dest_path)
+            dest_info = process.context.filesystem.get_file_info(dest_path)
             if dest_info.get('isDir', False):
                 # Destination is a directory, append source filename
                 source_basename = os.path.basename(source_path)
@@ -235,8 +235,8 @@ def _cp_agfs(process: Process, source_path: str, dest_path: str, recursive: bool
             process.stdout.flush()
 
             # Copy single file - read all at once to avoid append overhead
-            data = process.filesystem.read_file(source_path, stream=False)
-            process.filesystem.write_file(dest_path, data, append=False)
+            data = process.context.filesystem.read_file(source_path, stream=False)
+            process.context.filesystem.write_file(dest_path, data, append=False)
 
             return 0
 
@@ -254,20 +254,20 @@ def _cp_agfs_dir(process: Process, source_path: str, dest_path: str) -> int:
     try:
         # Create destination directory if it doesn't exist
         try:
-            info = process.filesystem.get_file_info(dest_path)
+            info = process.context.filesystem.get_file_info(dest_path)
             if not info.get('isDir', False):
                 process.stderr.write(f"cp: {dest_path}: Not a directory\n")
                 return 1
         except Exception:
             # Directory doesn't exist, create it
             try:
-                process.filesystem.client.mkdir(dest_path)
+                process.context.filesystem.client.mkdir(dest_path)
             except Exception as e:
                 process.stderr.write(f"cp: cannot create directory {dest_path}: {str(e)}\n")
                 return 1
 
         # List source directory
-        entries = process.filesystem.list_directory(source_path)
+        entries = process.context.filesystem.list_directory(source_path)
 
         for entry in entries:
             name = entry['name']
@@ -289,8 +289,8 @@ def _cp_agfs_dir(process: Process, source_path: str, dest_path: str) -> int:
                 process.stdout.flush()
 
                 # Copy file - read all at once to avoid append overhead
-                data = process.filesystem.read_file(src_item, stream=False)
-                process.filesystem.write_file(dst_item, data, append=False)
+                data = process.context.filesystem.read_file(src_item, stream=False)
+                process.context.filesystem.write_file(dst_item, data, append=False)
 
         return 0
 
@@ -388,7 +388,7 @@ def _cp_upload(process: Process, local_path: str, agfs_path: str, recursive: boo
 
         # Check if destination is a directory
         try:
-            dest_info = process.filesystem.get_file_info(agfs_path)
+            dest_info = process.context.filesystem.get_file_info(agfs_path)
             if dest_info.get('isDir', False):
                 # Destination is a directory, append source filename
                 source_basename = os.path.basename(local_path)
@@ -405,7 +405,7 @@ def _cp_upload(process: Process, local_path: str, agfs_path: str, recursive: boo
 
             # Upload file
             with open(local_path, 'rb') as f:
-                process.filesystem.write_file(agfs_path, f.read(), append=False)
+                process.context.filesystem.write_file(agfs_path, f.read(), append=False)
             return 0
 
         elif os.path.isdir(local_path):
@@ -431,7 +431,7 @@ def _cp_download(process: Process, agfs_path: str, local_path: str, recursive: b
     """
     try:
         # Check if source is a directory
-        info = process.filesystem.get_file_info(agfs_path)
+        info = process.context.filesystem.get_file_info(agfs_path)
 
         # Check if destination is a local directory
         if os.path.isdir(local_path):
@@ -451,7 +451,7 @@ def _cp_download(process: Process, agfs_path: str, local_path: str, recursive: b
             process.stdout.flush()
 
             # Download single file
-            stream = process.filesystem.read_file(agfs_path, stream=True)
+            stream = process.context.filesystem.read_file(agfs_path, stream=True)
             with open(local_path, 'wb') as f:
                 for chunk in stream:
                     if chunk:
@@ -480,11 +480,11 @@ def _cp_agfs(process: Process, source_path: str, dest_path: str, recursive: bool
     """
     try:
         # Check if source is a directory
-        info = process.filesystem.get_file_info(source_path)
+        info = process.context.filesystem.get_file_info(source_path)
 
         # Check if destination is a directory
         try:
-            dest_info = process.filesystem.get_file_info(dest_path)
+            dest_info = process.context.filesystem.get_file_info(dest_path)
             if dest_info.get('isDir', False):
                 # Destination is a directory, append source filename
                 source_basename = os.path.basename(source_path)
@@ -506,8 +506,8 @@ def _cp_agfs(process: Process, source_path: str, dest_path: str, recursive: bool
             process.stdout.flush()
 
             # Copy single file - read all at once to avoid append overhead
-            data = process.filesystem.read_file(source_path, stream=False)
-            process.filesystem.write_file(dest_path, data, append=False)
+            data = process.context.filesystem.read_file(source_path, stream=False)
+            process.context.filesystem.write_file(dest_path, data, append=False)
 
             return 0
 
@@ -525,20 +525,20 @@ def _cp_agfs_dir(process: Process, source_path: str, dest_path: str) -> int:
     try:
         # Create destination directory if it doesn't exist
         try:
-            info = process.filesystem.get_file_info(dest_path)
+            info = process.context.filesystem.get_file_info(dest_path)
             if not info.get('isDir', False):
                 process.stderr.write(f"cp: {dest_path}: Not a directory\n")
                 return 1
         except Exception:
             # Directory doesn't exist, create it
             try:
-                process.filesystem.client.mkdir(dest_path)
+                process.context.filesystem.client.mkdir(dest_path)
             except Exception as e:
                 process.stderr.write(f"cp: cannot create directory {dest_path}: {str(e)}\n")
                 return 1
 
         # List source directory
-        entries = process.filesystem.list_directory(source_path)
+        entries = process.context.filesystem.list_directory(source_path)
 
         for entry in entries:
             name = entry['name']
@@ -560,8 +560,8 @@ def _cp_agfs_dir(process: Process, source_path: str, dest_path: str) -> int:
                 process.stdout.flush()
 
                 # Copy file - read all at once to avoid append overhead
-                data = process.filesystem.read_file(src_item, stream=False)
-                process.filesystem.write_file(dst_item, data, append=False)
+                data = process.context.filesystem.read_file(src_item, stream=False)
+                process.context.filesystem.write_file(dst_item, data, append=False)
 
         return 0
 

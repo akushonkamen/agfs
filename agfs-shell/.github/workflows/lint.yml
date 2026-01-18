@@ -1,0 +1,43 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main, develop ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+
+    - name: Set up Python
+      run: uv python install 3.11
+
+    - name: Install dependencies
+      run: |
+        uv sync --all-extras --dev
+
+    - name: Check code formatting with Black
+      run: |
+        uv run black --check agfs_shell/ tests/
+
+    - name: Check import sorting with isort
+      run: |
+        uv run isort --check-only agfs_shell/ tests/
+
+    - name: Lint with ruff
+      run: |
+        uv run ruff check agfs_shell/ tests/
+
+    - name: Type check with mypy (optional)
+      run: |
+        uv run mypy agfs_shell/ --ignore-missing-imports || true
+      continue-on-error: true

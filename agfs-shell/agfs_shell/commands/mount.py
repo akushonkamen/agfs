@@ -25,14 +25,14 @@ def cmd_mount(process: Process) -> int:
         mount s3fs /test/s3 bucket=my-bucket region=us-west-1 access_key_id=xxx secret_access_key=yyy
         mount proxyfs /remote "base_url=http://workstation:8080/api/v1"  # Quote URLs with colons
     """
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("mount: filesystem not available\n")
         return 1
 
     # No arguments - list mounted filesystems
     if len(process.args) == 0:
         try:
-            mounts_list = process.filesystem.client.mounts()
+            mounts_list = process.context.filesystem.client.mounts()
 
             if not mounts_list:
                 process.stdout.write("No plugins mounted\n")
@@ -98,7 +98,7 @@ def cmd_mount(process: Process) -> int:
 
     try:
         # Use AGFS client to mount the plugin
-        process.filesystem.client.mount(fstype, path, config)
+        process.context.filesystem.client.mount(fstype, path, config)
         process.stdout.write(f"Mounted {fstype} at {path}\n")
         return 0
     except Exception as e:

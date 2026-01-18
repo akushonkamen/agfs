@@ -26,12 +26,12 @@ def _evaluate_test_expression(args: List[str], process: Process) -> bool:
         if len(args) < 2:
             raise ValueError("-f requires an argument")
         path = args[1]
-        if process.filesystem:
+        if process.context.filesystem:
             try:
-                info = process.filesystem.get_file_info(path)
+                info = process.context.filesystem.get_file_info(path)
                 is_dir = info.get('isDir', False) or info.get('type') == 'directory'
                 return not is_dir
-            except:
+            except Exception:
                 return False
         return False
 
@@ -39,16 +39,16 @@ def _evaluate_test_expression(args: List[str], process: Process) -> bool:
         if len(args) < 2:
             raise ValueError("-d requires an argument")
         path = args[1]
-        if process.filesystem:
-            return process.filesystem.is_directory(path)
+        if process.context.filesystem:
+            return process.context.filesystem.is_directory(path)
         return False
 
     if args[0] == '-e':
         if len(args) < 2:
             raise ValueError("-e requires an argument")
         path = args[1]
-        if process.filesystem:
-            return process.filesystem.file_exists(path)
+        if process.context.filesystem:
+            return process.context.filesystem.file_exists(path)
         return False
 
     # String test operators

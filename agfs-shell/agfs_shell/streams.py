@@ -83,7 +83,7 @@ class Stream:
         if self._file is not None and hasattr(self._file, 'fileno'):
             try:
                 return self._file.fileno()
-            except:
+            except Exception:
                 pass
         return None
 
@@ -249,7 +249,7 @@ class AGFSOutputStream(OutputStream):
             # Clear chunks
             self._chunks = []
             self._total_size = 0
-        except Exception as e:
+        except Exception:
             # Re-raise to let caller handle
             raise
 

@@ -10,7 +10,7 @@ This module provides a unified lexer that handles:
 Replaces fragile manual character-by-character parsing throughout the codebase.
 """
 
-from typing import List, Tuple, Optional
+from typing import List, Optional
 from enum import Enum
 
 

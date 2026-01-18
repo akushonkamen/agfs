@@ -1,11 +1,15 @@
 """AGFS File System abstraction layer"""
 
-from typing import BinaryIO, Iterator, Optional, Union
+from typing import BinaryIO, Iterator, Optional, Union, Dict, Any
 
 from pyagfs import AGFSClient, AGFSClientError
+from .filesystem_interface import FileSystemInterface
+from .exceptions import (
+    translate_agfs_error,
+)
 
 
-class AGFSFileSystem:
+class AGFSFileSystem(FileSystemInterface):
     """Abstraction layer for AGFS file system operations"""
 
     def __init__(self, server_url: str = "http://localhost:8080", timeout: int = 30):
@@ -52,7 +56,10 @@ class AGFSFileSystem:
             If stream=True: Iterator yielding chunks of bytes
 
         Raises:
-            AGFSClientError: If file cannot be read
+            ShellFileNotFoundError: If file does not exist
+            IsADirectoryError: If path is a directory
+            PermissionDeniedError: If access denied
+            FileSystemError: For other filesystem errors
         """
         try:
             if stream:
@@ -62,7 +69,7 @@ class AGFSFileSystem:
                         path, offset=offset, size=size, stream=True
                     )
                     return response.iter_content(chunk_size=8192)
-                except AGFSClientError as e:
+                except AGFSClientError:
                     # Fallback to regular read and simulate streaming
                     content = self.client.cat(
                         path, offset=offset, size=size, stream=False
@@ -78,8 +85,8 @@ class AGFSFileSystem:
                 # Return all content at once
                 return self.client.cat(path, offset=offset, size=size)
         except AGFSClientError as e:
-            # SDK error already includes path, don't duplicate it
-            raise AGFSClientError(str(e))
+            # Translate to specific shell exception
+            raise translate_agfs_error(e, path) from e
 
     def write_file(
         self,
@@ -295,3 +302,132 @@ class AGFSFileSystem:
                 return f"AGFS server not running at {self.server_url}"
             return msg
         return str(error)
+
+    # FileSystemInterface implementation methods
+
+    def is_file(self, path: str) -> bool:
+        """
+        Check if path is a regular file.
+
+        Args:
+            path: Path in AGFS
+
+        Returns:
+            True if path exists and is a file, False otherwise
+        """
+        try:
+            info = self.client.stat(path)
+            # A file is not a directory
+            return not info.get("isDir", False)
+        except AGFSClientError:
+            return False
+
+    def create_directory(self, path: str) -> Optional[str]:
+        """
+        Create directory.
+
+        Args:
+            path: Directory path to create
+
+        Returns:
+            Error message if failed, None if success
+        """
+        try:
+            self.client.mkdir(path)
+            return None
+        except AGFSClientError as e:
+            return str(e)
+
+    def delete_file(self, path: str, recursive: bool = False) -> Optional[str]:
+        """
+        Delete file or directory.
+
+        Args:
+            path: File or directory path to delete
+            recursive: If True, delete directory recursively
+
+        Returns:
+            Error message if failed, None if success
+        """
+        try:
+            self.client.rm(path, recursive=recursive)
+            return None
+        except AGFSClientError as e:
+            return str(e)
+
+    def get_metadata(self, path: str) -> Dict[str, Any]:
+        """
+        Get file or directory metadata.
+
+        Args:
+            path: File or directory path
+
+        Returns:
+            Metadata dict
+
+        Raises:
+            AGFSClientError: If path doesn't exist
+        """
+        # Delegate to existing get_file_info method
+        return self.get_file_info(path)
+
+    def copy_file(
+        self,
+        source: str,
+        dest: str,
+        recursive: bool = False
+    ) -> Optional[str]:
+        """
+        Copy file or directory.
+
+        Args:
+            source: Source path
+            dest: Destination path
+            recursive: If True, copy directory recursively
+
+        Returns:
+            Error message if failed, None if success
+        """
+        try:
+            self.client.cp(source, dest, recursive=recursive)
+            return None
+        except AGFSClientError as e:
+            return str(e)
+
+    def move_file(self, source: str, dest: str) -> Optional[str]:
+        """
+        Move/rename file or directory.
+
+        Args:
+            source: Source path
+            dest: Destination path
+
+        Returns:
+            Error message if failed, None if success
+        """
+        try:
+            self.client.mv(source, dest)
+            return None
+        except AGFSClientError as e:
+            return str(e)
+
+    def get_size(self, path: str) -> int:
+        """
+        Get file size in bytes.
+
+        Args:
+            path: File path
+
+        Returns:
+            File size in bytes
+
+        Raises:
+            AGFSClientError: If file doesn't exist or is a directory
+        """
+        try:
+            info = self.client.stat(path)
+            if info.get("isDir", False):
+                raise AGFSClientError(f"{path}: Is a directory")
+            return info.get("size", 0)
+        except AGFSClientError as e:
+            raise AGFSClientError(str(e))

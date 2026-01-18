@@ -15,7 +15,9 @@ def cmd_cd(process: Process) -> int:
 
     Usage: cd [path]
 
-    Note: This is a special builtin that needs to be handled by the shell
+    Note:
+        This is a special builtin that needs to be handled by the shell.
+        Uses process.context.filesystem for better decoupling.
     """
     if not process.args:
         # cd with no args goes to root
@@ -23,7 +25,7 @@ def cmd_cd(process: Process) -> int:
     else:
         target_path = process.args[0]
 
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("cd: filesystem not available\n")
         return 1
 
@@ -32,5 +34,5 @@ def cmd_cd(process: Process) -> int:
     process.cd_target = target_path
 
     # Return special exit code to indicate cd operation
-    # Shell will check for this and update cwd
+    # Shell will check for this and update cwd (via context)
     return 0

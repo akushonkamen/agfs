@@ -24,45 +24,89 @@ from .exit_codes import (
     EXIT_CODE_FUNCTION_DEF_NEEDED,
     EXIT_CODE_RETURN
 )
-from .control_flow import BreakException, ContinueException, ReturnException
+from .control_flow import BreakException, ContinueException
 from .control_parser import ControlParser
 from .executor import ShellExecutor
 from .expression import ExpressionExpander
+from .variable_manager import VariableManager
+from .path_manager import PathManager
+from .function_registry import FunctionRegistry
+from .alias_registry import AliasRegistry
+
+
+class _FunctionDictProxy(dict):
+    """Proxy dict that syncs with FunctionRegistry.
+
+    This allows backward compatible dict operations while keeping
+    the registry as the source of truth.
+    """
+
+    def __init__(self, registry: FunctionRegistry):
+        super().__init__()
+        self._registry = registry
+        # Sync initial state
+        self.update(registry.get_all_as_dict())
+
+    def __getitem__(self, key: str):
+        func_dict = self._registry.get_as_dict(key)
+        if func_dict is None:
+            raise KeyError(key)
+        return func_dict
+
+    def __setitem__(self, key: str, value: dict):
+        self._registry.define_from_dict(key, value)
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key: str):
+        self._registry.delete(key)
+        super().__delitem__(key)
+
+    def __contains__(self, key: str):
+        return self._registry.exists(key)
+
+    def __iter__(self):
+        return iter(self._registry.get_all_as_dict())
+
+    def keys(self):
+        return self._registry.get_all_as_dict().keys()
+
+    def values(self):
+        return self._registry.get_all_as_dict().values()
+
+    def items(self):
+        return self._registry.get_all_as_dict().items()
+
+    def get(self, key: str, default=None):
+        func_dict = self._registry.get_as_dict(key)
+        return func_dict if func_dict is not None else default
 
 
 class Shell:
-    """Simple shell with pipeline support"""
+    """Shell coordinator with component-based architecture.
+
+    This class coordinates between specialized components rather than
+    implementing all functionality directly. Components include:
+    - VariableManager: Environment variables and scopes
+    - PathManager: Working directory and path resolution
+    - FunctionRegistry: User-defined functions
+    - AliasRegistry: Command aliases
+    """
 
     def __init__(self, server_url: str = "http://localhost:8080", timeout: int = 30, initial_env: dict = None):
+        # Core components
+        self.variables = VariableManager(initial_env=initial_env)
+        self.path_manager = PathManager()
+        self.function_registry = FunctionRegistry()
+        self.alias_registry = AliasRegistry()
+
+        # Core infrastructure
         self.parser = CommandParser()
         self.running = True
         self.filesystem = AGFSFileSystem(server_url, timeout=timeout)
         self.server_url = server_url
-        self.cwd = '/'  # Current working directory (virtual path when chroot is set)
-        self.chroot_root = None  # None means no chroot, otherwise absolute path to chroot root
         self.console = Console(highlight=False)  # Rich console for output
         self.multiline_buffer = []  # Buffer for multiline input
-        self.env = {}  # Environment variables
-        # Inject initial environment variables if provided
-        if initial_env:
-            self.env.update(initial_env)
-        self.env['?'] = '0'  # Last command exit code
-
-        # Set default history file location
-        home = os.path.expanduser("~")
-        self.env['HISTFILE'] = os.path.join(home, ".agfs_shell_history")
-
         self.interactive = False  # Flag to indicate if running in interactive REPL mode
-
-        # Function definitions: {name: {'params': [...], 'body': [...]}}
-        self.functions = {}
-
-        # Aliases: {name: expansion_string}
-        self.aliases = {}
-
-        # Variable scope stack for local variables
-        # Each entry is a dict of local variables for that scope
-        self.local_scopes = []
 
         # Control flow components
         self.control_parser = ControlParser(self)
@@ -74,6 +118,63 @@ class Shell:
         # Background job management
         from .job_manager import JobManager
         self.job_manager = JobManager()
+
+    # ========================================================================
+    # Backward Compatibility Properties
+    # ========================================================================
+
+    @property
+    def cwd(self) -> str:
+        """Current working directory (backward compatibility)."""
+        return self.path_manager.cwd
+
+    @cwd.setter
+    def cwd(self, value: str):
+        """Set current working directory (backward compatibility)."""
+        self.path_manager.cwd = value
+
+    @property
+    def chroot_root(self) -> Optional[str]:
+        """Chroot root directory (backward compatibility)."""
+        return self.path_manager.chroot_root
+
+    @chroot_root.setter
+    def chroot_root(self, value: Optional[str]):
+        """Set chroot root directory (backward compatibility)."""
+        self.path_manager.chroot_root = value
+
+    @property
+    def env(self) -> dict:
+        """Environment variables (backward compatibility)."""
+        return self.variables.env
+
+    @property
+    def local_scopes(self) -> List[dict]:
+        """Local variable scopes (backward compatibility)."""
+        return self.variables.local_scopes
+
+    # Note: For functions and aliases, we expose the internal dicts directly
+    # to support both read and write operations (e.g., shell.aliases[name] = value)
+    @property
+    def functions(self) -> dict:
+        """User-defined functions (backward compatibility).
+
+        This exposes a special dict that syncs with the function registry.
+        Direct dict operations (get/set/del) work as expected.
+        """
+        # Create a proxy dict if not exists
+        if not hasattr(self, '_functions_dict'):
+            self._functions_dict = _FunctionDictProxy(self.function_registry)
+        return self._functions_dict
+
+    @property
+    def aliases(self) -> dict:
+        """Command aliases (backward compatibility).
+
+        This exposes the internal dict from the alias registry to support
+        both read and write operations.
+        """
+        return self.alias_registry._aliases
 
     def _execute_command_substitution(self, command: str) -> str:
         """
@@ -107,7 +208,7 @@ class Shell:
 
                     # Save real stdout buffer
                     import sys
-                    old_stdout_buffer = sys.stdout.buffer if hasattr(sys.stdout, 'buffer') else None
+                    _old_stdout_buffer = sys.stdout.buffer if hasattr(sys.stdout, 'buffer') else None
 
                     # Create a wrapper that has .buffer attribute
                     class StdoutWrapper:
@@ -130,7 +231,7 @@ class Shell:
 
                     try:
                         # Execute the function
-                        exit_code = self.execute_function(cmd, args)
+                        _exit_code = self.execute_function(cmd, args)
 
                         # Get all captured output
                         output = output_buffer.getvalue().decode('utf-8')
@@ -218,7 +319,7 @@ class Shell:
             if output_str.endswith('\n'):
                 output_str = output_str[:-1]
             return output_str
-        except Exception as e:
+        except Exception:
             return ''
 
     def _strip_comment(self, line: str) -> str:
@@ -246,8 +347,9 @@ class Shell:
         return strip_comments(line, comment_chars='#')
 
     def _get_variable(self, var_name: str) -> str:
-        """
-        Get variable value, checking local scopes first, then global env
+        """Get variable value, checking local scopes first, then global env.
+
+        This method delegates to VariableManager.
 
         Args:
             var_name: Variable name
@@ -255,41 +357,19 @@ class Shell:
         Returns:
             Variable value or empty string if not found
         """
-        # Check if we're in a function and have a local variable
-        if self.env.get('_function_depth'):
-            local_key = f'_local_{var_name}'
-            if local_key in self.env:
-                return self.env[local_key]
-
-        # Check local scopes from innermost to outermost
-        for scope in reversed(self.local_scopes):
-            if var_name in scope:
-                return scope[var_name]
-
-        # Fall back to global env
-        return self.env.get(var_name, '')
+        return self.variables.get(var_name, '')
 
     def _set_variable(self, var_name: str, value: str, local: bool = False):
-        """
-        Set variable value
+        """Set variable value.
+
+        This method delegates to VariableManager.
 
         Args:
             var_name: Variable name
             value: Variable value
             local: If True, set in current local scope; otherwise set in global env
         """
-        if local and self.local_scopes:
-            # Set in current local scope
-            self.local_scopes[-1][var_name] = value
-            # Also set in env with _local_ prefix for compatibility
-            self.env[f'_local_{var_name}'] = value
-        elif self.env.get('_function_depth') and f'_local_{var_name}' in self.env:
-            # We're in a function and this variable was declared local
-            # Update the local variable, not the global one
-            self.env[f'_local_{var_name}'] = value
-        else:
-            # Set in global env
-            self.env[var_name] = value
+        self.variables.set(var_name, value, local=local)
 
     def _expand_basic_variables(self, text: str) -> str:
         """
@@ -419,7 +499,7 @@ class Shell:
 
             # Return as integer (bash arithmetic uses integers)
             return int(result)
-        except (SyntaxError, ValueError, ZeroDivisionError) as e:
+        except (SyntaxError, ValueError, ZeroDivisionError):
             # If evaluation fails, return 0 (bash behavior)
             return 0
         except Exception:
@@ -474,7 +554,7 @@ class Shell:
 
         # Find the first word (command name)
         # Handle commands with leading spaces
-        leading_spaces = len(command_line) - len(command_line.lstrip())
+        _leading_spaces = len(command_line) - len(command_line.lstrip())
 
         # Split on first whitespace to get command and rest
         parts = stripped.split(None, 1)
@@ -709,7 +789,7 @@ class Shell:
                 # This replaces the dangerous eval() call with a secure alternative
                 result = self._safe_eval_arithmetic(expanded_expr)
                 return str(result)
-            except Exception as e:
+            except Exception:
                 # If evaluation fails, return 0
                 return '0'
 
@@ -772,7 +852,6 @@ class Shell:
         Returns:
             List of (cmd, expanded_args) tuples
         """
-        import fnmatch
 
         expanded_commands = []
 
@@ -840,7 +919,7 @@ class Shell:
                         full_path = dir_path + '/' + entry['name']
 
                     matches.append(full_path)
-        except Exception as e:
+        except Exception:
             # Directory doesn't exist or other error
             # Return empty list to keep original pattern
             pass
@@ -902,9 +981,9 @@ class Shell:
         return False
 
     def resolve_path(self, path: str) -> str:
-        """
-        Resolve a relative or absolute path to an absolute path.
-        If chroot is set, paths are confined within chroot_root.
+        """Resolve a relative or absolute path to an absolute path.
+
+        This method delegates to PathManager.
 
         Args:
             path: Path to resolve (can be relative or absolute)
@@ -912,35 +991,7 @@ class Shell:
         Returns:
             Absolute path (real path when chroot is set)
         """
-        if not path:
-            path = self.cwd
-
-        # No chroot - use original logic
-        if self.chroot_root is None:
-            if path.startswith('/'):
-                return os.path.normpath(path)
-            full_path = os.path.join(self.cwd, path)
-            return os.path.normpath(full_path)
-
-        # With chroot: user sees virtual paths, we return real paths
-        if path.startswith('/'):
-            # User input absolute path (relative to chroot_root)
-            virtual_path = path
-        else:
-            # User input relative path (relative to virtual cwd)
-            virtual_path = os.path.join(self.cwd, path)
-
-        # Normalize virtual path (handles .. etc)
-        virtual_path = os.path.normpath(virtual_path)
-
-        # Ensure virtual path doesn't escape "/"
-        # normpath turns "/../.." into "/" which is what we want
-        if not virtual_path.startswith('/'):
-            virtual_path = '/' + virtual_path
-
-        # Construct real path
-        real_path = os.path.join(self.chroot_root, virtual_path.lstrip('/'))
-        return os.path.normpath(real_path)
+        return self.path_manager.resolve_path(path)
 
     def execute_for_loop(self, lines: List[str]) -> int:
         """
@@ -1755,7 +1806,7 @@ class Shell:
             if len(parts) == 2:
                 var_name = parts[0].strip()
                 # Check if it's a valid variable name (not a command with = in args)
-                if var_name and var_name.replace('_', '').isalnum() and not ' ' in var_name:
+                if var_name and var_name.replace('_', '').isalnum() and ' ' not in var_name:
                     var_value = parts[1].strip()
 
                     # Remove outer quotes if present (both single and double)
@@ -2236,7 +2287,7 @@ class Shell:
         self.console.print(highlight=False)
 
         # Setup tab completion and history
-        history_loaded = False
+        _history_loaded = False
         try:
             from .completer import ShellCompleter
 
@@ -2312,7 +2363,7 @@ class Shell:
             # Try to load existing history
             try:
                 readline.read_history_file(history_file)
-                history_loaded = True
+                _history_loaded = True
             except FileNotFoundError:
                 # History file doesn't exist yet - will be created on exit
                 pass

@@ -1,7 +1,7 @@
 """HTTP command for making HTTP requests with persistent state."""
 
 import json
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from ..process import Process
 from ..command_decorators import command
 from . import register_command
@@ -38,16 +38,16 @@ def cmd_http(process: Process) -> int:
         http DELETE /users/123 -f -o result
         http GET https://example.com/file.tar.gz --stdout > file.tar.gz
     """
-    if not process.shell:
+    if not process.context._shell:
         process.stderr.write("http: shell context not available\n")
         return 1
 
     # Initialize HTTP client if not present
-    if not hasattr(process.shell, 'http_client'):
+    if not hasattr(process.context._shell, 'http_client'):
         from ..http_client import HTTPClient
-        process.shell.http_client = HTTPClient()
+        process.context._shell.http_client = HTTPClient()
 
-    client = process.shell.http_client
+    client = process.context._shell.http_client
 
     if len(process.args) == 0:
         process.stderr.write("http: missing arguments\n")
@@ -235,7 +235,7 @@ def _handle_http_request(process: Process, client) -> int:
                 'duration_ms': response.duration_ms,
             }
             # Store as JSON string in shell env
-            process.shell.env[output_var] = json.dumps(response_dict)
+            process.context._shell.env[output_var] = json.dumps(response_dict)
 
         # Check for failure
         if fail_on_error and not response.ok:

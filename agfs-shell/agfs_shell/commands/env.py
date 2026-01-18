@@ -14,8 +14,10 @@ def cmd_env(process: Process) -> int:
     Display all environment variables
 
     Usage: env
+
+    Note:
+        Uses process.context.env instead of process.shell.env for better decoupling.
     """
-    if hasattr(process, 'env'):
-        for key, value in sorted(process.env.items()):
-            process.stdout.write(f"{key}={value}\n".encode('utf-8'))
+    for key, value in sorted(process.context.env.items()):
+        process.stdout.write(f"{key}={value}\n".encode('utf-8'))
     return 0

@@ -69,12 +69,12 @@ def cmd_tail(process: Process) -> int:
         # Normal tail mode - read last n lines from each file
         for filename in files:
             try:
-                if not process.filesystem:
+                if not process.context.filesystem:
                     process.stderr.write(b"tail: filesystem not available\n")
                     return 1
 
                 # Use streaming mode to read entire file
-                stream = process.filesystem.read_file(filename, stream=True)
+                stream = process.context.filesystem.read_file(filename, stream=True)
                 chunks = []
                 for chunk in stream:
                     if chunk:
@@ -94,7 +94,7 @@ def cmd_tail(process: Process) -> int:
         filename = files[0]
 
         try:
-            if process.filesystem:
+            if process.context.filesystem:
                 if stream_only:
                     # -F mode: Stream-only mode for filesystems that support streaming
                     # This mode uses continuous streaming read without loading history
@@ -103,7 +103,7 @@ def cmd_tail(process: Process) -> int:
 
                     # Use continuous streaming read
                     try:
-                        stream = process.filesystem.read_file(filename, stream=True)
+                        stream = process.context.filesystem.read_file(filename, stream=True)
                         for chunk in stream:
                             if chunk:
                                 process.stdout.write(chunk)
@@ -123,7 +123,7 @@ def cmd_tail(process: Process) -> int:
                 else:
                     # -f mode: Traditional follow mode
                     # First, output the last n lines
-                    stream = process.filesystem.read_file(filename, stream=True)
+                    stream = process.context.filesystem.read_file(filename, stream=True)
                     chunks = []
                     for chunk in stream:
                         if chunk:
@@ -135,7 +135,7 @@ def cmd_tail(process: Process) -> int:
                     process.stdout.flush()
 
                     # Get current file size
-                    file_info = process.filesystem.get_file_info(filename)
+                    file_info = process.context.filesystem.get_file_info(filename)
                     current_size = file_info.get('size', 0)
 
                     # Now continuously poll for new content
@@ -145,7 +145,7 @@ def cmd_tail(process: Process) -> int:
 
                             # Check file size
                             try:
-                                file_info = process.filesystem.get_file_info(filename)
+                                file_info = process.context.filesystem.get_file_info(filename)
                                 new_size = file_info.get('size', 0)
                             except Exception:
                                 # File might not exist yet, keep waiting
@@ -153,7 +153,7 @@ def cmd_tail(process: Process) -> int:
 
                             if new_size > current_size:
                                 # Read new content from offset using streaming
-                                stream = process.filesystem.read_file(
+                                stream = process.context.filesystem.read_file(
                                     filename,
                                     offset=current_size,
                                     size=new_size - current_size,

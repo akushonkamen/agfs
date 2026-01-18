@@ -1,0 +1,312 @@
+"""
+Comprehensive tests for expression.py module.
+
+Tests cover:
+- EscapeHandler: escape sequence processing
+- ExpressionExpander: complete expression expansion (integration tests)
+- Variable expansion, arithmetic, command substitution
+"""
+
+import pytest
+from agfs_shell.expression import EscapeHandler, ExpressionExpander
+
+
+# =============================================================================
+# EscapeHandler Tests
+# =============================================================================
+
+class TestEscapeHandler:
+    """Tests for EscapeHandler class."""
+
+    def test_simple_escapes(self):
+        """Test simple escape sequences like \\n, \\t."""
+        assert EscapeHandler.process_escapes('hello\\nworld') == 'hello\nworld'
+        assert EscapeHandler.process_escapes('tab\\there') == 'tab\there'
+        assert EscapeHandler.process_escapes('\\r\\n') == '\r\n'
+
+    def test_special_characters(self):
+        """Test escape sequences for special characters."""
+        assert EscapeHandler.process_escapes('\\a') == '\a'  # alert
+        assert EscapeHandler.process_escapes('\\b') == '\b'  # backspace
+        assert EscapeHandler.process_escapes('\\f') == '\f'  # form feed
+        assert EscapeHandler.process_escapes('\\v') == '\v'  # vertical tab
+        assert EscapeHandler.process_escapes('\\e') == '\x1b'  # escape
+
+    def test_quote_escapes(self):
+        """Test escaping quotes."""
+        assert EscapeHandler.process_escapes("\\'") == "'"
+        assert EscapeHandler.process_escapes('\\"') == '"'
+        assert EscapeHandler.process_escapes('\\\\') == '\\'
+
+    def test_hex_escapes(self):
+        """Test hexadecimal escape sequences."""
+        assert EscapeHandler.process_escapes('\\x41') == 'A'  # 0x41 = 65 = 'A'
+        assert EscapeHandler.process_escapes('\\x20') == ' '  # space
+        assert EscapeHandler.process_escapes('\\x00') == '\x00'  # null
+
+    def test_null_character(self):
+        """Test \\0 escape."""
+        assert EscapeHandler.process_escapes('\\0') == '\x00'
+
+    def test_no_escapes(self):
+        """Test text without escapes."""
+        assert EscapeHandler.process_escapes('hello world') == 'hello world'
+        assert EscapeHandler.process_escapes('') == ''
+
+    def test_mixed_escapes(self):
+        """Test mixed escape sequences."""
+        text = 'line1\\nline2\\ttab\\x41end'
+        expected = 'line1\nline2\ttabAend'
+        assert EscapeHandler.process_escapes(text) == expected
+
+
+# =============================================================================
+# ExpressionExpander Integration Tests
+# =============================================================================
+
+class TestExpressionExpander:
+    """Tests for ExpressionExpander class (integration)."""
+
+    def test_expand_simple_variable(self, mock_filesystem):
+        """Test expanding $VAR."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['USER'] = 'testuser'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('Hello $USER')
+            assert result == 'Hello testuser'
+
+    def test_expand_braced_variable(self, mock_filesystem):
+        """Test expanding ${VAR}."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['VAR'] = 'value'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('${VAR}')
+            assert result == 'value'
+
+    def test_expand_arithmetic(self, mock_filesystem):
+        """Test expanding $((arithmetic))."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('Result: $((2 + 3))')
+            assert result == 'Result: 5'
+
+    def test_expand_arithmetic_multiplication(self, mock_filesystem):
+        """Test arithmetic multiplication."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('Result: $((3 * 4))')
+            assert result == 'Result: 12'
+
+    def test_expand_arithmetic_subtraction(self, mock_filesystem):
+        """Test arithmetic subtraction."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$((10 - 3))')
+            assert result == '7'
+
+    def test_expand_arithmetic_division(self, mock_filesystem):
+        """Test arithmetic division."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$((15 / 3))')
+            assert result == '5'
+
+    def test_expand_arithmetic_complex(self, mock_filesystem):
+        """Test complex arithmetic."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$((2 + 3 * 4))')
+            assert result == '14'
+
+    def test_expand_command_substitution(self, mock_filesystem):
+        """Test expanding $(command)."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            # Command substitution executes echo
+            result = expander.expand('$(echo hello)')
+            assert 'hello' in result
+
+    def test_expand_mixed_expressions(self, mock_filesystem):
+        """Test expanding mixed expressions."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['VAR'] = 'value'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$VAR and $((1+1))')
+            assert 'value' in result
+            assert '2' in result
+
+    def test_expand_multiple_variables(self, mock_filesystem):
+        """Test expanding multiple variables."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['A'] = 'first'
+            shell.env['B'] = 'second'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$A-$B')
+            assert result == 'first-second'
+
+    def test_expand_undefined_variable(self, mock_filesystem):
+        """Test expanding undefined variable."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$UNDEFINED')
+            assert result == ''
+
+    def test_expand_variable_with_default(self, mock_filesystem):
+        """Test ${VAR:-default} expansion."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('${UNDEFINED:-defaultvalue}')
+            assert result == 'defaultvalue'
+
+    def test_expand_variable_with_default_when_set(self, mock_filesystem):
+        """Test ${VAR:-default} when VAR is set."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['VAR'] = 'actual'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('${VAR:-default}')
+            assert result == 'actual'
+
+    def test_expand_special_variables(self, mock_filesystem):
+        """Test special variables like $?."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['?'] = '0'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('Exit: $?')
+            assert 'Exit: 0' in result
+
+    def test_expand_arithmetic_with_variables(self, mock_filesystem):
+        """Test arithmetic with variable expansion."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['X'] = '5'
+            shell.env['Y'] = '3'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('$(($X + $Y))')
+            assert result == '8'
+
+    def test_expand_nested_braces(self, mock_filesystem):
+        """Test nested ${} expansion."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+            shell.env['VAR'] = 'test'
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('prefix${VAR}suffix')
+            assert result == 'prefixtestsuffix'
+
+    def test_expand_backticks(self, mock_filesystem):
+        """Test backtick command substitution."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('`echo test`')
+            assert 'test' in result
+
+    def test_expand_empty_string(self, mock_filesystem):
+        """Test expanding empty string."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('')
+            assert result == ''
+
+    def test_expand_no_substitutions(self, mock_filesystem):
+        """Test text with no substitutions."""
+        from agfs_shell.shell import Shell
+        from unittest.mock import patch
+
+        with patch('agfs_shell.shell.AGFSFileSystem', return_value=mock_filesystem):
+            shell = Shell()
+
+            expander = ExpressionExpander(shell)
+            result = expander.expand('plain text')
+            assert result == 'plain text'
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

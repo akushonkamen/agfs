@@ -53,7 +53,7 @@ def cmd_jq(process: Process) -> int:
         for filepath in input_files:
             try:
                 # Read file content
-                content = process.filesystem.read_file(filepath)
+                content = process.context.filesystem.read_file(filepath)
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
 

@@ -31,7 +31,7 @@ def cmd_alias(process: Process) -> int:
     Note: Aliases are expanded before command execution. To prevent alias
     expansion, quote the command or use a backslash: \\command
     """
-    if not process.shell:
+    if not process.context._shell:
         process.stderr.write(b"alias: shell context not available\n")
         return 1
 

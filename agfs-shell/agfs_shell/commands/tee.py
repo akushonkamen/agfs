@@ -28,7 +28,7 @@ def cmd_tee(process: Process) -> int:
         else:
             files.append(arg)
 
-    if files and not process.filesystem:
+    if files and not process.context.filesystem:
         process.stderr.write(b"tee: filesystem not available\n")
         return 1
 
@@ -47,7 +47,7 @@ def cmd_tee(process: Process) -> int:
             content = b''.join(lines)
             for filename in files:
                 try:
-                    process.filesystem.write_file(filename, content, append=True)
+                    process.context.filesystem.write_file(filename, content, append=True)
                 except Exception as e:
                     process.stderr.write(f"tee: {filename}: {str(e)}\n".encode())
                     return 1
@@ -61,7 +61,7 @@ def cmd_tee(process: Process) -> int:
             for filename in files:
                 try:
                     # Pass iterator to write_file for streaming
-                    process.filesystem.write_file(filename, line_iterator(), append=False)
+                    process.context.filesystem.write_file(filename, line_iterator(), append=False)
                 except Exception as e:
                     process.stderr.write(f"tee: {filename}: {str(e)}\n".encode())
                     return 1

@@ -6,6 +6,7 @@ from ..process import Process
 from ..command_decorators import command
 from ..utils.formatters import mode_to_rwx
 from . import register_command
+from .base import handle_filesystem_error
 
 
 @command(needs_path_resolution=True)
@@ -20,7 +21,7 @@ def cmd_stat(process: Process) -> int:
         process.stderr.write("stat: missing operand\n")
         return 1
 
-    if not process.filesystem:
+    if not process.context.filesystem:
         process.stderr.write("stat: filesystem not available\n")
         return 1
 
@@ -28,7 +29,7 @@ def cmd_stat(process: Process) -> int:
 
     try:
         # Get file info from the filesystem
-        file_info = process.filesystem.get_file_info(path)
+        file_info = process.context.filesystem.get_file_info(path)
 
         # File exists, display information
         name = file_info.get('name', path.split('/')[-1] if '/' in path else path)
@@ -66,9 +67,4 @@ def cmd_stat(process: Process) -> int:
         return 0
 
     except Exception as e:
-        error_msg = str(e)
-        if "No such file or directory" in error_msg or "not found" in error_msg.lower():
-            process.stderr.write("stat: No such file or directory\n")
-        else:
-            process.stderr.write(f"stat: {path}: {error_msg}\n")
-        return 1
+        return handle_filesystem_error(process, e, path)

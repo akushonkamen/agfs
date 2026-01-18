@@ -117,7 +117,7 @@ def command(
             # implementation...
     """
     def decorator(func: Callable) -> Callable:
-        cmd_name = name or func.__name__.replace('cmd_', '')
+        _cmd_name = name or func.__name__.replace('cmd_', '')
 
         metadata = {
             'needs_path_resolution': needs_path_resolution,
