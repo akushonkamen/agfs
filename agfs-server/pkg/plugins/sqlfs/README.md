@@ -71,46 +71,46 @@ agfs:/> mount sqlfs /shared backend=tidb dsn="user:pass@tcp(shared-db:4000)/agfs
 agfs:/> mount sqlfs /fast backend=sqlite db_path=fast.db cache_enabled=true cache_max_size=5000 cache_ttl_seconds=10
 ```
 
-## Static Configuration (config.toml):
+## Static Configuration (config.yaml):
 
 Alternative to dynamic mounting - configure in server config file:
 
 SQLite Backend (Local Testing):
-```toml
-[plugins.sqlfs]
-enabled = true
-path = "/sqlfs"
+```yaml
+plugins:
+  sqlfs:
+    enabled: true
+    path: /sqlfs
+    config:
+      backend: sqlite # or sqlite3
+      db_path: sqlfs.db
 
-  [plugins.sqlfs.config]
-  backend = "sqlite"  # or "sqlite3"
-  db_path = "sqlfs.db"
-  
-  # Optional cache settings (enabled by default)
-  cache_enabled = true        # Enable/disable directory listing cache
-  cache_max_size = 1000       # Maximum number of cached entries (default: 1000)
-  cache_ttl_seconds = 5       # Cache entry TTL in seconds (default: 5)
+      # Optional cache settings (enabled by default)
+      cache_enabled: true # Enable/disable directory listing cache
+      cache_max_size: 1000 # Maximum number of cached entries (default: 1000)
+      cache_ttl_seconds: 5 # Cache entry TTL in seconds (default: 5)
 ```
 
 TiDB Backend (Production):
-```toml
-[plugins.sqlfs]
-enabled = true
-path = "/sqlfs"
+```yaml
+plugins:
+  sqlfs:
+    enabled: true
+    path: /sqlfs
+    config:
+      backend: tidb
 
-  [plugins.sqlfs.config]
-  backend = "tidb"
-  
-  # For TiDB Cloud (TLS required):
-  user = "3YdGXuXNdAEmP1f.root"
-  password = "your_password"
-  host = "gateway01.us-west-2.prod.aws.tidbcloud.com"
-  port = "4000"
-  database = "baas"
-  enable_tls = true
-  tls_server_name = "gateway01.us-west-2.prod.aws.tidbcloud.com"
-  
-  # Or use DSN with TLS:
-  # dsn = "user:password@tcp(host:4000)/database?charset=utf8mb4&parseTime=True&tls=tidb"
+      # For TiDB Cloud (TLS required):
+      user: 3YdGXuXNdAEmP1f.root
+      password: your_password
+      host: gateway01.us-west-2.prod.aws.tidbcloud.com
+      port: "4000"
+      database: baas
+      enable_tls: true
+      tls_server_name: gateway01.us-west-2.prod.aws.tidbcloud.com
+
+      # Or use DSN with TLS:
+      # dsn: "user:password@tcp(host:4000)/database?charset=utf8mb4&parseTime=True&tls=tidb"
 ```
 
 ## Usage

@@ -47,26 +47,26 @@ agfs ls /localfs/data/
 
 ## Configuration
 
-```toml
-[plugins.streamrotatefs]
-enabled = true
-path = "/streamrotatefs"
+```yaml
+plugins:
+  streamrotatefs:
+    enabled: true
+    path: /streamrotatefs
+    config:
+      # Stream buffer settings (same as streamfs)
+      channel_buffer_size: "6MB"
+      ring_buffer_size: "6MB"
 
-  [plugins.streamrotatefs.config]
-  # Stream buffer settings (same as streamfs)
-  channel_buffer_size = "6MB"
-  ring_buffer_size = "6MB"
+      # Rotation settings
+      rotation_interval: "5m" # Rotate every 5 minutes
+      rotation_size: "100MB" # Rotate at 100MB
 
-  # Rotation settings
-  rotation_interval = "5m"              # Rotate every 5 minutes
-  rotation_size = "100MB"               # Rotate at 100MB
+      # Output path - must be an AGFS path
+      output_path: /s3fs/my-bucket/streams # Save to S3 via s3fs
+      # OR
+      # output_path: /localfs/data # Save via localfs
 
-  # Output path - must be an AGFS path
-  output_path = "/s3fs/my-bucket/streams"  # Save to S3 via s3fs
-  # OR
-  # output_path = "/localfs/data"            # Save via localfs
-
-  filename_pattern = "{channel}_{datetime}_{index}.dat"
+      filename_pattern: "{channel}_{datetime}_{index}.dat"
 ```
 
 ### Output Path
@@ -80,21 +80,21 @@ path = "/streamrotatefs"
 ## Configuration Examples
 
 ### Time-based rotation (every hour)
-```toml
-rotation_interval = "1h"
-rotation_size = ""  # Disabled
+```yaml
+rotation_interval: "1h"
+rotation_size: "" # Disabled
 ```
 
 ### Size-based rotation (100MB chunks)
-```toml
-rotation_interval = ""  # Disabled
-rotation_size = "100MB"
+```yaml
+rotation_interval: "" # Disabled
+rotation_size: "100MB"
 ```
 
 ### Combined (whichever comes first)
-```toml
-rotation_interval = "10m"
-rotation_size = "50MB"
+```yaml
+rotation_interval: "10m"
+rotation_size: "50MB"
 ```
 
 ## Filename Pattern Examples

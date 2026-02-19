@@ -15,37 +15,39 @@ Unlike serving local files, this exposes any AGFS filesystem (memfs, queuefs, s3
 CONFIGURATION:
 
   Basic configuration:
- ```toml
-[plugins.httpfs]
-enabled = true
-path = "/httpfs"              # This is just a placeholder, not used for serving
-
-  [plugins.httpfs.config]
-  agfs_path = "/memfs"         # The AGFS path to serve (e.g., /memfs, /queuefs)
-  host = "0.0.0.0"            # Optional, defaults to 0.0.0.0 (all interfaces)
-  port = "8000"               # Optional, defaults to 8000
+ ```yaml
+plugins:
+  httpfs:
+    enabled: true
+    path: /httpfs # Placeholder mount path, not used for serving
+    config:
+      agfs_path: /memfs # AGFS path to serve (e.g., /memfs, /queuefs)
+      host: 0.0.0.0 # Optional, defaults to 0.0.0.0
+      port: "8000" # Optional, defaults to 8000
 ```
   Example - Serve memfs:
-```toml  
-[plugins.httpfs_mem]
-enabled = true
-path = "/httpfs_mem"
-
-   [plugins.httpfs_mem.config]
-   agfs_path = "/memfs"
-   host = "localhost"
-   port = "9000"
+```yaml
+plugins:
+  httpfs:
+    - name: httpfs_mem
+      enabled: true
+      path: /httpfs_mem
+      config:
+        agfs_path: /memfs
+        host: localhost
+        port: "9000"
 ```
 
 Example - Serve queuefs:
-```toml
-[plugins.httpfs_queue]
-enabled = true
-path = "/httpfs_queue"
-
-  [plugins.httpfs_queue.config]
-  agfs_path = "/queuefs"
-  port = "9001"
+```yaml
+plugins:
+  httpfs:
+    - name: httpfs_queue
+      enabled: true
+      path: /httpfs_queue
+      config:
+        agfs_path: /queuefs
+        port: "9001"
 ```
 
 ## Current Configuration

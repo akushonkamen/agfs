@@ -12,30 +12,29 @@ This plugin mounts a local directory into the AGFS virtual file system.
 ## Configuration
 
 Basic configuration:
-```toml  
-[plugins.localfs]
-enabled = true
-path = "/local"
-
-  [plugins.localfs.config]
-  local_dir = "/path/to/local/directory"
+```yaml
+plugins:
+  localfs:
+    enabled: true
+    path: /local
+    config:
+      local_dir: /path/to/local/directory
 ```
 
 Multiple local mounts:
-```toml
-[plugins.localfs_home]
-enabled = true
-path = "/home"
-
-  [plugins.localfs_home.config]
-  local_dir = "/Users/username"
-
-[plugins.localfs_data]
-enabled = true
-path = "/data"
-
-  [plugins.localfs_data.config]
-  local_dir = "/var/data"
+```yaml
+plugins:
+  localfs:
+    - name: home
+      enabled: true
+      path: /home
+      config:
+        local_dir: /Users/username
+    - name: data
+      enabled: true
+      path: /data
+      config:
+        local_dir: /var/data
 ```
 ## Current Mount
 Base Path: %s

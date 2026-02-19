@@ -52,60 +52,59 @@ agfs:/> mount s3fs /s3-prod bucket=prod-bucket region=us-east-1 access_key_id=KE
 agfs:/> mount s3fs /s3-dev bucket=dev-bucket region=us-west-2 access_key_id=KEY2 secret_access_key=SECRET2 prefix=dev/
 ```
 
-## Static Configuration (config.toml):
+## Static Configuration (config.yaml):
 
 Alternative to dynamic mounting - configure in server config file:
 
 AWS S3:
-```toml
-[plugins.s3fs]
-enabled = true
-path = "/s3fs"
-
-  [plugins.s3fs.config]
-  region = "us-east-1"
-  bucket = "my-bucket"
-  access_key_id = "AKIAIOSFODNN7EXAMPLE"
-  secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-  prefix = "agfs/"  # Optional: all keys will be prefixed with this
+```yaml
+plugins:
+  s3fs:
+    enabled: true
+    path: /s3fs
+    config:
+      region: us-east-1
+      bucket: my-bucket
+      access_key_id: AKIAIOSFODNN7EXAMPLE
+      secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      prefix: agfs/ # Optional: all keys will be prefixed with this
 ```
 
 S3-Compatible Service (MinIO, LocalStack):
-```toml 
-[plugins.s3fs]
-enabled = true
-path = "/s3fs"
-
-  [plugins.s3fs.config]
-  region = "us-east-1"
-  bucket = "my-bucket"
-  access_key_id = "minioadmin"
-  secret_access_key = "minioadmin"
-  endpoint = "http://localhost:9000"
-  disable_ssl = true
+```yaml
+plugins:
+  s3fs:
+    enabled: true
+    path: /s3fs
+    config:
+      region: us-east-1
+      bucket: my-bucket
+      access_key_id: minioadmin
+      secret_access_key: minioadmin
+      endpoint: http://localhost:9000
+      disable_ssl: true
 ```
 
 Multiple S3 Buckets:
-```toml
-[plugins.s3fs_prod]
-enabled = true
-path = "/s3/prod"
-
-  [plugins.s3fs_prod.config]
-  region = "us-east-1"
-  bucket = "production-bucket"
-  access_key_id = "..."
-  secret_access_key = "..."
-
-[plugins.s3fs_dev]
-enabled = true
-path = "/s3/dev"
-
-  [plugins.s3fs_dev.config]
-  region = "us-west-2"
-  bucket = "development-bucket"
-  access_key_id = "..."
-  secret_access_key = "..."
+```yaml
+plugins:
+  s3fs:
+    - name: prod
+      enabled: true
+      path: /s3/prod
+      config:
+        region: us-east-1
+        bucket: production-bucket
+        access_key_id: "..."
+        secret_access_key: "..."
+    - name: dev
+      enabled: true
+      path: /s3/dev
+      config:
+        region: us-west-2
+        bucket: development-bucket
+        access_key_id: "..."
+        secret_access_key: "..."
 ```
 
 ## Usage

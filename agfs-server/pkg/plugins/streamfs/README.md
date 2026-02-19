@@ -95,27 +95,27 @@ agfs rm /streamfs/stream
 
 ## Configuration
 
-```toml
-[plugins.streamfs]
-enabled = true
-path = "/streamfs"
+```yaml
+plugins:
+  streamfs:
+    enabled: true
+    path: /streamfs
+    config:
+      # Channel buffer size per reader (supports units: KB, MB, GB or raw bytes)
+      # Controls how much data each reader can buffer before dropping chunks
+      # For live streaming: 256KB - 512KB (low latency)
+      # For VOD/recording: 4MB - 8MB (smooth playback)
+      # Default: 6MB
+      # Examples: "512KB", "1MB", "6MB", or 524288 (bytes)
+      channel_buffer_size: "512KB"
 
-  [plugins.streamfs.config]
-  # Channel buffer size per reader (supports units: KB, MB, GB or raw bytes)
-  # Controls how much data each reader can buffer before dropping chunks
-  # For live streaming: 256KB - 512KB (low latency)
-  # For VOD/recording: 4MB - 8MB (smooth playback)
-  # Default: 6MB
-  # Examples: "512KB", "1MB", "6MB", or 524288 (bytes)
-  channel_buffer_size = "512KB"
-
-  # Ring buffer size for historical data (supports units: KB, MB, GB or raw bytes)
-  # Stores recent data for late-joining readers
-  # For live streaming: 512KB - 1MB (low latency, less memory)
-  # For VOD: 4MB - 8MB (more history for seekable playback)
-  # Default: 6MB
-  # Examples: "1MB", "4MB", or 1048576 (bytes)
-  ring_buffer_size = "1MB"
+      # Ring buffer size for historical data (supports units: KB, MB, GB or raw bytes)
+      # Stores recent data for late-joining readers
+      # For live streaming: 512KB - 1MB (low latency, less memory)
+      # For VOD: 4MB - 8MB (more history for seekable playback)
+      # Default: 6MB
+      # Examples: "1MB", "4MB", or 1048576 (bytes)
+      ring_buffer_size: "1MB"
 ```
 
 ## Notes
