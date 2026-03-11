@@ -1,69 +1,91 @@
-MemFS Plugin - In-Memory File System
+# MemFS Plugin - In-Memory File System
 
 This plugin provides a full-featured in-memory file system.
 
-DYNAMIC MOUNTING WITH AGFS SHELL:
+## Dynamic Mounting With AGFS Shell
 
-  Interactive shell:
-  agfs:/> mount memfs /mem
-  agfs:/> mount memfs /tmp
-  agfs:/> mount memfs /scratch init_dirs='["/home","/tmp","/data"]'
+Interactive shell:
+```bash  
+agfs:/> mount memfs /mem
+agfs:/> mount memfs /tmp
+agfs:/> mount memfs /scratch init_dirs='["/home","/tmp","/data"]'
+```
 
-  Direct command:
-  uv run agfs mount memfs /mem
-  uv run agfs mount memfs /tmp init_dirs='["/work","/cache"]'
+Direct command:
+```bash 
+uv run agfs mount memfs /mem
+uv run agfs mount memfs /tmp init_dirs='["/work","/cache"]'
+```
 
-CONFIGURATION PARAMETERS:
+## Configuration Parameters
 
-  Optional:
-  - init_dirs: Array of directories to create automatically on mount
+Optional:
+- `init_dirs`: Array of directories to create automatically on mount
 
-  Examples:
-  agfs:/> mount memfs /workspace init_dirs='["/projects","/builds","/logs"]'
+Examples:
+```bash  
+agfs:/> mount memfs /workspace init_dirs='["/projects","/builds","/logs"]'
+```
 
-FEATURES:
-  - Standard file system operations (create, read, write, delete)
-  - Directory support with hierarchical structure
-  - File permissions (chmod)
-  - File/directory renaming and moving
-  - Metadata tracking
+## Features
+- Standard file system operations (create, read, write, delete)
+- Directory support with hierarchical structure
+- File permissions (chmod)
+- File/directory renaming and moving
+- Metadata tracking
 
-USAGE:
-  Create a file:
-    touch /path/to/file
+## USAGE
+Create a file:
+```bash
+touch /path/to/file
+```
 
-  Write to a file:
-    echo "content" > /path/to/file
+Write to a file:
+```bash
+echo "content" > /path/to/file
+```
 
-  Read a file:
-    cat /path/to/file
+Read a file:
+```bash
+cat /path/to/file
+```
 
-  Create a directory:
-    mkdir /path/to/dir
+Create a directory:
+```bash
+mkdir /path/to/dir
+```
 
-  List directory:
-    ls /path/to/dir
+List directory:
+```bash
+ls /path/to/dir
+```
 
-  Remove file/directory:
-    rm /path/to/file
-    rm -r /path/to/dir
+Remove file/directory:
+```bash
+rm /path/to/file
+rm -r /path/to/dir
+```
 
-  Move/rename:
-    mv /old/path /new/path
+Move/rename:
+```bash
+mv /old/path /new/path
+```
 
-  Change permissions:
-    chmod 755 /path/to/file
+Change permissions:
+```bash
+chmod 755 /path/to/file
+```
 
-EXAMPLES:
-  agfs:/> mkdir /memfs/data
-  agfs:/> echo "hello" > /memfs/data/file.txt
-  agfs:/> cat /memfs/data/file.txt
-  hello
-  agfs:/> ls /memfs/data
-  agfs:/> mv /memfs/data/file.txt /memfs/data/renamed.txt
+## Examples
 
-VERSION: 1.0.0
-AUTHOR: VFS Server
+```bash
+agfs:/> mkdir /memfs/data
+agfs:/> echo "hello" > /memfs/data/file.txt
+agfs:/> cat /memfs/data/file.txt
+hello
+agfs:/> ls /memfs/data
+agfs:/> mv /memfs/data/file.txt /memfs/data/renamed.txt
+```
 
 ## License
 

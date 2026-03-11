@@ -1,12 +1,16 @@
-HelloFS Plugin - Minimal Demo
+# HelloFS Plugin - Minimal Demo
 
-This plugin provides a single file: /hello
+This plugin provides a single file: `/hello`
 
-MOUNT:
-  agfs:/> mount hellofs /hello
+## MOUNT
+```bash
+agfs:/> mount hellofs /hello
+```
 
-USAGE:
-  cat /hellofs/hello
+## USAGE
+```bash
+cat /hellofs/hello
+```
 
 ## License
 

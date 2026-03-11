@@ -43,37 +43,37 @@ VectorFS provides semantic search capabilities for documents by combining:
 
 ## Configuration
 
-### TOML Configuration
+### YAML Configuration
 
-```toml
-[plugins.vectorfs]
-enabled = true
-path = "/vectorfs"
+```yaml
+plugins:
+  vectorfs:
+    enabled: true
+    path: /vectorfs
+    config:
+      # S3 Storage Configuration
+      s3_bucket: my-document-bucket
+      s3_key_prefix: vectorfs # Optional, default: vectorfs
+      s3_region: us-east-1 # Optional, default: us-east-1
+      s3_access_key: AKIAXXXXXXXX # Optional, uses IAM role if not provided
+      s3_secret_key: secret # Optional
+      s3_endpoint: "" # Optional, for custom S3-compatible services
 
-  [plugins.vectorfs.config]
-  # S3 Storage Configuration
-  s3_bucket = "my-document-bucket"
-  s3_key_prefix = "vectorfs"           # Optional, default: "vectorfs"
-  s3_region = "us-east-1"              # Optional, default: "us-east-1"
-  s3_access_key = "AKIAXXXXXXXX"       # Optional, uses IAM role if not provided
-  s3_secret_key = "secret"             # Optional
-  s3_endpoint = ""                     # Optional, for custom S3-compatible services
+      # TiDB Cloud Configuration
+      tidb_dsn: "user:password@tcp(gateway01.us-west-2.prod.aws.tidbcloud.com:4000)/dbname?tls=true"
 
-  # TiDB Cloud Configuration
-  tidb_dsn = "user:password@tcp(gateway01.us-west-2.prod.aws.tidbcloud.com:4000)/dbname?tls=true"
+      # Embedding Configuration
+      embedding_provider: openai # Default: openai
+      openai_api_key: sk-xxxxxxxxxxxxxxxx
+      embedding_model: text-embedding-3-small # Default: text-embedding-3-small
+      embedding_dim: 1536 # Default: 1536
 
-  # Embedding Configuration
-  embedding_provider = "openai"                    # Default: "openai"
-  openai_api_key = "sk-xxxxxxxxxxxxxxxx"
-  embedding_model = "text-embedding-3-small"       # Default: "text-embedding-3-small"
-  embedding_dim = 1536                             # Default: 1536
+      # Chunking Configuration (Optional)
+      chunk_size: 512 # Default: 512 tokens
+      chunk_overlap: 50 # Default: 50 tokens
 
-  # Chunking Configuration (Optional)
-  chunk_size = 512                                 # Default: 512 tokens
-  chunk_overlap = 50                               # Default: 50 tokens
-
-  # Worker Pool Configuration (Optional)
-  index_workers = 4                                # Default: 4 concurrent workers
+      # Worker Pool Configuration (Optional)
+      index_workers: 4 # Default: 4 concurrent workers
 ```
 
 ### TiDB Cloud Setup
