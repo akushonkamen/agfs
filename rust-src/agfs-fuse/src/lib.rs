@@ -8,3 +8,4 @@
 pub mod cache;
 pub mod fusefs;
 pub mod handles;
+pub mod node;
