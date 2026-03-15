@@ -1,0 +1,49 @@
+[package]
+name = "agfs-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agfs-server"
+path = "src/main.rs"
+
+[dependencies]
+agfs-sdk = { path = "../agfs-sdk" }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+reqwest = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+xxhash-rust = { workspace = true }
+md5 = { workspace = true }
+regex = { workspace = true }
+radix_trie = { workspace = true }
+matchit = { workspace = true }
+dashmap = { workspace = true }
+
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+
+sqlx = { workspace = true }
+
+extism = { workspace = true }
+
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+axum-test = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "agfs-fuse"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agfs-fuse"
+path = "src/main.rs"
+
+[dependencies]
+agfs-sdk = { path = "../agfs-sdk" }
+
+tokio = { workspace = true }
+nix = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuse3 = { version = "0.7", features = ["tokio-runtime"] }
