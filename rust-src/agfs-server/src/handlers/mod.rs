@@ -6,6 +6,7 @@
 pub mod directories;
 pub mod files;
 pub mod grep;
+pub mod handles;
 pub mod operations;
 pub mod plugins;
 pub mod response;

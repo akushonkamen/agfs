@@ -252,9 +252,11 @@ pub struct HandleOpenRequest {
     /// File path
     pub path: String,
     /// Open flags
-    pub flags: i32,
+    pub flags: Option<i32>,
     /// File mode for creation
-    pub mode: u32,
+    pub mode: Option<u32>,
+    /// Read-only flag
+    pub readonly: Option<bool>,
 }
 
 /// Handle open response
@@ -283,18 +285,23 @@ pub struct HandleInfoResponse {
     /// File path
     pub path: String,
     /// Open flags
+    #[serde(default)]
     pub flags: i32,
     /// Lease duration in seconds
+    #[serde(default)]
     pub lease: i32,
     /// When the lease expires
-    #[serde(rename = "expiresAt")]
+    #[serde(rename = "expiresAt", default)]
     pub expires_at: String,
     /// When the handle was created
-    #[serde(rename = "createdAt")]
+    #[serde(rename = "createdAt", default)]
     pub created_at: String,
     /// Last access time
-    #[serde(rename = "lastAccess")]
+    #[serde(rename = "lastAccess", default)]
     pub last_access: String,
+    /// Read-only flag
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 /// Handle read response
@@ -343,4 +350,34 @@ pub struct HandleRenewResponse {
     pub expires_at: String,
     /// Lease duration in seconds
     pub lease: i32,
+}
+
+/// Handle close response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandleCloseResponse {
+    /// Handle ID that was closed
+    #[serde(rename = "handleId")]
+    pub handle_id: i64,
+    /// Message
+    pub message: String,
+}
+
+/// Handle read request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandleReadRequest {
+    /// Offset to read from (-1 for current position)
+    pub offset: Option<i64>,
+    /// Number of bytes to read
+    pub size: Option<i64>,
+}
+
+/// Handle write request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandleWriteRequest {
+    /// Offset to write to (-1 for append)
+    pub offset: Option<i64>,
+    /// Base64 encoded data to write
+    pub data: String,
+    /// Whether to flush after write
+    pub flush: Option<bool>,
 }

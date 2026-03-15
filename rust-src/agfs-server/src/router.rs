@@ -2,9 +2,9 @@
 //!
 //! Sets up all axum routes and middleware.
 
-use crate::handlers::{directories, files, grep, operations, plugins, system};
+use crate::handlers::{directories, files, grep, handles, operations, plugins, system};
 use axum::{
-    routing::{get, post, put, delete},
+    routing::{get, post},
     Router,
 };
 use std::sync::Arc;
@@ -22,9 +22,11 @@ pub fn create_router(mfs: Arc<MountableFS>) -> Router {
         .route("/api/v1/capabilities", get(system::capabilities))
         .route("/api/v1/version", get(system::version))
         // File operations
-        .route("/api/v1/files", get(files::read_file).post(files::create_file).put(files::write_file).delete(files::delete_file))
+        .route("/api/v1/files", get(files::read_file).post(files::create_file).put(files::write_file))
+        .route("/api/v1/files/delete", post(files::delete_file))
         // Directory operations
-        .route("/api/v1/directories", get(directories::list_directory).post(directories::create_directory).delete(directories::delete_directory))
+        .route("/api/v1/directories", get(directories::list_directory).post(directories::create_directory))
+        .route("/api/v1/directories/delete", post(directories::delete_directory))
         // Operations
         .route("/api/v1/stat", get(operations::stat))
         .route("/api/v1/rename", post(operations::rename))
@@ -35,6 +37,13 @@ pub fn create_router(mfs: Arc<MountableFS>) -> Router {
         .route("/api/v1/readlink", get(operations::readlink))
         .route("/api/v1/digest", post(operations::digest))
         .route("/api/v1/grep", post(grep::grep))
+        // Handle operations
+        .route("/api/v1/handles/open", post(handles::open_handle))
+        .route("/api/v1/handles/:id/read", post(handles::read_handle))
+        .route("/api/v1/handles/:id/write", post(handles::write_handle))
+        .route("/api/v1/handles/:id/close", post(handles::close_handle))
+        .route("/api/v1/handles/:id", get(handles::get_handle_info))
+        .route("/api/v1/handles/:id/delete", post(handles::delete_handle))
         // Plugin management
         .route("/api/v1/mounts", get(plugins::list_mounts))
         .route("/api/v1/mount", post(plugins::mount))

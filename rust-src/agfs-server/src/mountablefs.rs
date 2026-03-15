@@ -45,15 +45,22 @@ impl std::fmt::Debug for MountPoint {
 }
 
 /// Information about a file handle
-#[allow(dead_code)]
-struct HandleInfo {
+///
+/// This struct is exposed via the handlers module for use in handle API responses.
+pub struct HandleInfo {
     /// The mount point where this handle was opened
-    mount: Arc<MountPoint>,
+    pub mount: Arc<MountPoint>,
     /// The local handle ID (plugin-specific)
-    local_handle_id: i64,
+    pub local_handle_id: i64,
     /// Full path including mount point
-    full_path: String,
+    pub full_path: String,
+    /// Whether this handle is read-only
+    pub readonly: bool,
 }
+
+// Safety: HandleInfo is Send + Sync because all its fields are Send + Sync
+unsafe impl Send for HandleInfo {}
+unsafe impl Sync for HandleInfo {}
 
 /// MountableFS - routes file system requests to mounted plugins
 ///
@@ -68,11 +75,9 @@ pub struct MountableFS {
     plugin_factories: RwLock<HashMap<String, PluginFactory>>,
 
     /// Global handle ID counter (atomic, cross-plugin unique)
-    #[allow(dead_code)]
     global_handle_id: AtomicI64,
 
     /// Handle information storage (global_handle_id -> HandleInfo)
-    #[allow(dead_code)]
     handles: DashMap<i64, HandleInfo>,
 
     /// Symlink mapping table (link_path -> target_path)
@@ -637,6 +642,114 @@ impl FileSystem for MountableFS {
             .find_mount(&resolved)
             .ok_or_else(|| AgfsError::NotFound(format!("open_write {}", path)))?;
         mount.plugin.get_filesystem().open_write(&rel_path)
+    }
+}
+
+// ============================================================================
+// Handle Management
+// ============================================================================
+
+impl MountableFS {
+    /// Find the mount point and relative path for a given full path
+    pub fn find_mount_and_relative_path(
+        &self,
+        path: &str,
+    ) -> Result<(Arc<MountPoint>, String), AgfsError> {
+        let resolved = self.resolve_path(path)?;
+        self.find_mount(&resolved)
+            .ok_or_else(|| AgfsError::NotFound(format!("path not found: {}", path)))
+    }
+
+    /// Allocate a new file handle
+    ///
+    /// Opens a file and returns a global handle ID that can be used
+    /// for subsequent read/write operations.
+    pub fn allocate_handle(
+        &self,
+        mount: Arc<MountPoint>,
+        path: String,
+        flags: WriteFlag,
+    ) -> Result<i64, AgfsError> {
+        // Allocate global handle ID
+        let handle_id = self.global_handle_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
+        let readonly = flags.is_empty() || (flags.bits() & (WriteFlag::CREATE.bits() | WriteFlag::TRUNCATE.bits() | WriteFlag::APPEND.bits())) == 0;
+
+        // Store handle info (we open files on demand for each operation)
+        let info = HandleInfo {
+            mount,
+            local_handle_id: handle_id,
+            full_path: path,
+            readonly,
+        };
+
+        self.handles.insert(handle_id, info);
+
+        Ok(handle_id)
+    }
+
+    /// Read from a handle
+    pub fn read_handle(&self, handle_id: i64, offset: i64, size: i64) -> Result<Vec<u8>, AgfsError> {
+        let info = self
+            .handles
+            .get(&handle_id)
+            .ok_or_else(|| AgfsError::NotFound(format!("handle {}", handle_id)))?;
+
+        if !info.readonly {
+            return Err(AgfsError::PermissionDenied("handle is not open for reading".to_string()));
+        }
+
+        // Read using the filesystem trait
+        let fs = info.mount.plugin.get_filesystem();
+        fs.read(&info.full_path, offset, size)
+    }
+
+    /// Write to a handle
+    pub fn write_handle(
+        &self,
+        handle_id: i64,
+        offset: i64,
+        data: &[u8],
+        _flush: bool,
+    ) -> Result<i64, AgfsError> {
+        let info = self
+            .handles
+            .get(&handle_id)
+            .ok_or_else(|| AgfsError::NotFound(format!("handle {}", handle_id)))?;
+
+        if info.readonly {
+            return Err(AgfsError::PermissionDenied("handle is read-only".to_string()));
+        }
+
+        // Write using the FileSystem trait
+        let fs = info.mount.plugin.get_filesystem();
+        let flags = if offset < 0 {
+            WriteFlag::APPEND
+        } else {
+            WriteFlag::NONE
+        };
+        fs.write(&info.full_path, data, offset, flags)
+    }
+
+    /// Close a handle
+    pub fn close_handle(&self, handle_id: i64) -> Result<(), AgfsError> {
+        self.handles
+            .remove(&handle_id)
+            .ok_or_else(|| AgfsError::NotFound(format!("handle {}", handle_id)))?;
+        Ok(())
+    }
+
+    /// Get handle info
+    pub fn get_handle_info(&self, handle_id: i64) -> Result<HandleInfo, AgfsError> {
+        self.handles
+            .get(&handle_id)
+            .map(|entry| HandleInfo {
+                mount: entry.mount.clone(),
+                local_handle_id: entry.local_handle_id,
+                full_path: entry.full_path.clone(),
+                readonly: entry.readonly,
+            })
+            .ok_or_else(|| AgfsError::NotFound(format!("handle {}", handle_id)))
     }
 }
 
