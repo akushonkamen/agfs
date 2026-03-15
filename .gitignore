@@ -41,3 +41,28 @@ build/
 *.pyc
 __pycache__/
 .idea
+
+
+# Rust build artifacts
+rust-src/target/
+
+# Cargo lock (workspace-level, keep the one in rust-src/)
+# rust-src/Cargo.lock  ← 保留，用于可重现构建
+
+# Temporary cargo check/test output
+/tmp/cargo_check_err
+/tmp/cargo_test_err
+/tmp/clippy_err
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code worktrees (if used)
+.claude/worktrees/

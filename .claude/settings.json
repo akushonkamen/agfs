@@ -1,0 +1,49 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "model": "claude-opus-4-6",
+  "preferredNotifChannel": "terminal_bell",
+  "autoApprove": [
+    "Read",
+    "Write",
+    "Edit",
+    "Bash(cargo:*)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git tag:*)",
+    "Bash(git log:*)",
+    "Bash(git diff:*)",
+    "Bash(git status:*)",
+    "Bash(find:*)",
+    "Bash(cat:*)",
+    "Bash(ls:*)",
+    "Bash(mkdir:*)",
+    "Bash(cp:*)",
+    "Bash(mv:*)",
+    "Bash(sed:*)",
+    "Bash(grep:*)"
+  ],
+  "hooks": {
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/task_completed.sh"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/teammate_idle.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
