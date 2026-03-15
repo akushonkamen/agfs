@@ -152,6 +152,7 @@ pub async fn delete_file(
 ///
 /// This is used when the underlying filesystem supports streaming reads
 /// (e.g., streamfs for real-time data).
+#[allow(clippy::result_large_err)]
 fn stream_response(
     _path: String,
     _stream_reader: Box<dyn agfs_sdk::StreamReader>,
@@ -169,6 +170,7 @@ fn stream_response(
 ///
 /// Uses a blocking task to read chunks and sends them through a channel
 /// for chunked transfer encoding.
+#[allow(clippy::result_large_err)]
 fn stream_read_fallback(
     mfs: &MountableFS,
     path: &str,
@@ -286,7 +288,7 @@ impl Stream for StreamReaderBody {
         _cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let timeout = self.timeout_ms;
-        let result = if let Some(mut reader) = self.reader.take() {
+        if let Some(mut reader) = self.reader.take() {
             match reader.read_chunk(timeout) {
                 Ok((data, is_eof)) => {
                     if is_eof || data.is_empty() {
@@ -307,7 +309,6 @@ impl Stream for StreamReaderBody {
             }
         } else {
             Poll::Ready(None)
-        };
-        result
+        }
     }
 }
