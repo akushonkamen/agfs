@@ -12,7 +12,7 @@
 | 5 | 存储 Plugins（外部依赖） | completed | plugin-storage-engineer | 2025-03-15 | 2025-03-15 |
 | 6 | 高级 Plugins | completed | plugin-advanced-engineer | 2025-03-15 | 2025-03-15 |
 | 7 | FUSE 客户端 | completed | fuse-engineer | 2025-03-15 | 2025-03-15 |
-| 8 | 端到端验收 | pending | integration-engineer | - | - |
+| 8 | 端到端验收 | completed | integration-engineer | 2025-03-16 | 2025-03-16 |
 | 9 | 清理（删除 Go 源码） | pending | - | - | - |
 
 ---
