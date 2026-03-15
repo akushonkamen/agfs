@@ -76,17 +76,15 @@ impl LogLevel {
 fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim().to_lowercase();
 
-    // Parse duration string like "5s", "100ms", "1m"
-    if let Some(suffix) = s.strip_suffix("s") {
-        if suffix.is_empty() || suffix.ends_with("sec") {
-            let num_str = s.trim_end_matches('s').trim_end_matches("sec").trim();
-            let secs: u64 = num_str
-                .parse()
-                .map_err(|_| format!("Invalid duration: {}", s))?;
-            return Ok(Duration::from_secs(secs));
-        }
+    // First try to parse as plain number (default to seconds)
+    if let Ok(secs) = s.parse::<u64>() {
+        return Ok(Duration::from_secs(secs));
     }
 
+    // Parse duration string like "5s", "100ms", "1m", "2h"
+    // Order matters: check longer/more specific suffixes first
+
+    // Milliseconds (must be before "s" and "m")
     if let Some(suffix) = s.strip_suffix("ms") {
         let num_str = suffix.trim();
         let millis: u64 = num_str
@@ -95,6 +93,26 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_millis(millis));
     }
 
+    // Seconds with "sec" suffix
+    if s.ends_with("sec") {
+        let num_str = s.trim_end_matches("sec").trim();
+        let secs: u64 = num_str
+            .parse()
+            .map_err(|_| format!("Invalid duration: {}", s))?;
+        return Ok(Duration::from_secs(secs));
+    }
+
+    // Seconds with "s" suffix (must be after "ms")
+    if let Some(suffix) = s.strip_suffix("s") {
+        if !suffix.is_empty() {
+            let secs: u64 = suffix
+                .parse()
+                .map_err(|_| format!("Invalid duration: {}", s))?;
+            return Ok(Duration::from_secs(secs));
+        }
+    }
+
+    // Minutes (must be after "ms")
     if let Some(suffix) = s.strip_suffix("m") {
         let num_str = suffix.trim();
         let mins: u64 = num_str
@@ -103,6 +121,7 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_secs(mins * 60));
     }
 
+    // Hours
     if let Some(suffix) = s.strip_suffix("h") {
         let num_str = suffix.trim();
         let hours: u64 = num_str
@@ -111,7 +130,7 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_secs(hours * 3600));
     }
 
-    // Try parsing as plain number (seconds)
+    // If nothing matched, try parsing as plain number (seconds)
     let secs: u64 = s.parse().map_err(|_| format!("Invalid duration: {}", s))?;
     Ok(Duration::from_secs(secs))
 }

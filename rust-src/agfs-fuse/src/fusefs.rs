@@ -95,7 +95,8 @@ impl AGFSFS {
         // Clear caches
         self.meta_cache.write().await.clear();
         self.dir_cache.write().await.clear();
-        self.node_cache.write().await.clear();
+
+        // Note: node_cache cleanup happens automatically when dropped
 
         Ok(())
     }

@@ -302,8 +302,9 @@ mod tests {
 
         let retrieved = cache.get("/dir");
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().len(), 1);
-        assert_eq!(retrieved.unwrap()[0].name, "file.txt");
+        let retrieved_files = retrieved.as_ref().unwrap();
+        assert_eq!(retrieved_files.len(), 1);
+        assert_eq!(retrieved_files[0].name, "file.txt");
     }
 
     #[test]
