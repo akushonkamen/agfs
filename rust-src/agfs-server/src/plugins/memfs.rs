@@ -2,7 +2,12 @@
 //!
 //! A full-featured in-memory file system implementation.
 
-use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData, WriteFlag};
+use agfs_sdk::{
+    types::ConfigParameter,
+    AgfsError, FileInfo, FileSystem, MetaData, ServicePlugin, WriteFlag,
+};
+use serde_json::Value;
+use std::collections::HashMap;
 use chrono::Utc;
 use dashmap::DashMap;
 use std::path::Path;
@@ -236,6 +241,11 @@ impl FileSystem for MemFS {
     fn read_dir(&self, path: &str) -> Result<Vec<FileInfo>, AgfsError> {
         let path = Self::normalize_path(path);
 
+        // Auto-create root directory if it doesn't exist
+        if !self.files.contains_key(&path) {
+            self.files.insert(path.to_string(), MemFile::new_dir(0o755));
+        }
+
         let entry = self.files.get(path.as_str())
             .ok_or_else(|| AgfsError::not_found(path.clone()))?;
 
@@ -259,8 +269,16 @@ impl FileSystem for MemFS {
             // Check if this is a direct child
             if key.starts_with(&prefix) {
                 let rest = &key[prefix.len()..];
-                if !rest.contains('/') {
-                    // Direct child
+                // Check if rest contains no additional slashes (direct child)
+                // For root level (empty prefix), we need to check if there's exactly one path component
+                let is_direct_child = if prefix.is_empty() {
+                    // For root level: /file1.txt is direct, /dir/file.txt is not
+                    !rest[1..].contains('/') // Skip the leading /
+                } else {
+                    !rest.contains('/')
+                };
+
+                if is_direct_child {
                     let file = entry.value();
                     files.push(FileInfo {
                         name: Self::base_name(key),
@@ -409,6 +427,60 @@ impl std::io::Write for MemWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// MemFS plugin wrapper
+pub struct MemFSPlugin {
+    fs: MemFS,
+}
+
+impl MemFSPlugin {
+    pub fn new() -> Self {
+        Self { fs: MemFS::new() }
+    }
+}
+
+impl Default for MemFSPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ServicePlugin for MemFSPlugin {
+    fn name(&self) -> &str {
+        "memfs"
+    }
+
+    fn validate(&self, _config: &HashMap<String, Value>) -> Result<(), AgfsError> {
+        Ok(())
+    }
+
+    fn initialize(&mut self, _config: HashMap<String, Value>) -> Result<(), AgfsError> {
+        Ok(())
+    }
+
+    fn get_filesystem(&self) -> &dyn FileSystem {
+        &self.fs
+    }
+
+    fn get_readme(&self) -> &str {
+        "MemFS - In-memory file system for fast temporary storage"
+    }
+
+    fn get_config_params(&self) -> Vec<ConfigParameter> {
+        vec![]
+    }
+
+    fn shutdown(&mut self) -> Result<(), AgfsError> {
+        // Clear all data
+        self.fs.files.clear();
+        Ok(())
+    }
+}
+
+/// Factory function for creating memfs plugin instances
+pub fn create_memfs_plugin() -> Box<dyn ServicePlugin> {
+    Box::new(MemFSPlugin::new())
 }
 
 #[cfg(test)]
