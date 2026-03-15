@@ -9,11 +9,13 @@ use std::sync::Arc;
 
 /// Query session
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct Session {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     query: String,
     result: Vec<Vec<String>>,
+    #[allow(dead_code)]
     created_at: chrono::DateTime<chrono::Utc>,
 }
 

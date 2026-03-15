@@ -9,7 +9,7 @@
 | 2 | MountableFS 与 HTTP 层 | completed | server-engineer | 2025-03-15 | 2025-03-15 |
 | 3 | 基础 Plugins（无外部依赖） | completed | plugin-basic-engineer | 2025-03-15 | 2025-03-15 |
 | 4 | 流与队列 Plugins | completed | plugin-stream-engineer | 2025-03-15 | 2025-03-15 |
-| 5 | 存储 Plugins（外部依赖） | in_progress | plugin-storage-engineer | 2025-03-15 | - |
+| 5 | 存储 Plugins（外部依赖） | completed | plugin-storage-engineer | 2025-03-15 | 2025-03-15 |
 | 6 | 高级 Plugins | pending | plugin-advanced-engineer | - | - |
 | 7 | FUSE 客户端 | pending | fuse-engineer | - | - |
 | 8 | 端到端验收 | pending | integration-engineer | - | - |
