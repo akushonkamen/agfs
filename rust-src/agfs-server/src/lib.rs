@@ -7,11 +7,10 @@
 #![allow(missing_docs)]
 
 pub mod config;
-pub mod filesystem;
 pub mod handlers;
 pub mod mountablefs;
-pub mod plugin;
 pub mod plugins;
+pub mod router;
 
 pub use config::Config;
-pub use mountablefs::MountableFS;
+pub use mountablefs::{MountableFS, PluginFactory, META_VALUE_ROOT, META_VALUE_MOUNT_POINT};
