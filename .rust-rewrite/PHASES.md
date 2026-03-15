@@ -13,7 +13,7 @@
 | 6 | 高级 Plugins | completed | plugin-advanced-engineer | 2025-03-15 | 2025-03-15 |
 | 7 | FUSE 客户端 | completed | fuse-engineer | 2025-03-15 | 2025-03-15 |
 | 8 | 端到端验收 | completed | integration-engineer | 2025-03-16 | 2025-03-16 |
-| 9 | 清理（删除 Go 源码） | in_progress | - | 2025-03-16 | - |
+| 9 | 清理（删除 Go 源码） | completed | - | 2025-03-16 | 2025-03-16 |
 | 9 | 清理（删除 Go 源码） | pending | - | - | - |
 
 ---
