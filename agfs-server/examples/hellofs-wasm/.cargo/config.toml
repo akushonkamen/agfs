@@ -1,5 +1,0 @@
-[target.wasm32-wasip1]
-rustflags = [
-  "-C", "link-arg=--export=malloc",
-  "-C", "link-arg=--export=free",
-]
