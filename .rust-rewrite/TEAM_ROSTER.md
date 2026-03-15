@@ -7,7 +7,7 @@
 | rewrite-lead | - | active | - | - |
 | infra-engineer | Phase 0 | dismissed | 2025-03-15 | 2025-03-15 |
 | core-engineer | Phase 1 | dismissed | 2025-03-15 | 2025-03-15 |
-| server-engineer | Phase 2 | active | 2025-03-15 | - |
+| server-engineer | Phase 2 | dismissed | 2025-03-15 | 2025-03-15 |
 | plugin-basic-engineer | Phase 3 | pending | - | - |
 | plugin-stream-engineer | Phase 4 | pending | - | - |
 | plugin-storage-engineer | Phase 5 | pending | - | - |

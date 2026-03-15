@@ -6,9 +6,9 @@
 |-------|------|------|----------|----------|----------|
 | 0 | Workspace 初始化 | completed | infra-engineer | 2025-03-15 | 2025-03-15 |
 | 1 | 核心类型与 FileSystem trait | completed | core-engineer | 2025-03-15 | 2025-03-15 |
-| 2 | MountableFS 与 HTTP 层 | in_progress | server-engineer | 2025-03-15 | - |
-| 3 | 基础 Plugins（无外部依赖） | pending | plugin-basic-engineer | - | - |
-| 4 | 流与队列 Plugins | pending | plugin-stream-engineer | - | - |
+| 2 | MountableFS 与 HTTP 层 | completed | server-engineer | 2025-03-15 | 2025-03-15 |
+| 3 | 基础 Plugins（无外部依赖） | completed | plugin-basic-engineer | 2025-03-15 | 2025-03-15 |
+| 4 | 流与队列 Plugins | completed | plugin-stream-engineer | 2025-03-15 | 2025-03-15 |
 | 5 | 存储 Plugins（外部依赖） | pending | plugin-storage-engineer | - | - |
 | 6 | 高级 Plugins | pending | plugin-advanced-engineer | - | - |
 | 7 | FUSE 客户端 | pending | fuse-engineer | - | - |

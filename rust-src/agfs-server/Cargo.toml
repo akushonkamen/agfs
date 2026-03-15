@@ -51,6 +51,7 @@ extism = { workspace = true }
 
 chrono = { workspace = true }
 uuid = { workspace = true }
+rand = "0.8"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
