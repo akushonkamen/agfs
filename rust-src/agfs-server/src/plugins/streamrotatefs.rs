@@ -2,8 +2,8 @@
 //!
 //! Provides time-based rotation for streams.
 
-use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData, StreamReader, Streamer};
-use chrono::{Utc, Timelike, DurationRound};
+use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData};
+use chrono::{Utc, Timelike};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -21,8 +21,10 @@ pub enum RotationInterval {
 /// Stream data with timestamp
 #[derive(Debug, Clone)]
 struct TimedStreamData {
+    #[allow(dead_code)]
     timestamp: chrono::DateTime<chrono::Utc>,
     data: Vec<u8>,
+    #[allow(dead_code)]
     is_eof: bool,
 }
 
@@ -58,7 +60,7 @@ impl RotatingStream {
 
     fn write(&mut self, data: &[u8]) {
         let key = self.get_current_key();
-        let entry = self.streams.entry(key).or_insert_with(Vec::new);
+        let entry = self.streams.entry(key).or_default();
         entry.push(TimedStreamData {
             timestamp: Utc::now(),
             data: data.to_vec(),
@@ -187,7 +189,7 @@ impl FileSystem for StreamRotateFS {
         let streams = self.streams.read()
             .map_err(|e| AgfsError::internal(e.to_string()))?;
 
-        if path == "/" || path == "" {
+        if path == "/" || path.is_empty() {
             // List all streams
             Ok(streams.keys().map(|name| FileInfo {
                 name: name.clone(),
@@ -221,7 +223,7 @@ impl FileSystem for StreamRotateFS {
         let streams = self.streams.read()
             .map_err(|e| AgfsError::internal(e.to_string()))?;
 
-        if path == "/" || path == "" {
+        if path == "/" || path.is_empty() {
             return Ok(FileInfo {
                 name: String::new(),
                 size: 0,

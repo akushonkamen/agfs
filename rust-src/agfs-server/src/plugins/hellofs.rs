@@ -52,7 +52,7 @@ impl FileSystem for HelloFS {
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<FileInfo>, AgfsError> {
-        if path != "/" && path != "" {
+        if path != "/" && !path.is_empty() {
             return Err(AgfsError::not_found(path));
         }
 

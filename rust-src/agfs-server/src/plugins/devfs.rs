@@ -55,7 +55,7 @@ impl FileSystem for DevFS {
         Err(AgfsError::NotSupported)
     }
 
-    fn read(&self, path: &str, offset: i64, size: i64) -> Result<Vec<u8>, AgfsError> {
+    fn read(&self, path: &str, _offset: i64, size: i64) -> Result<Vec<u8>, AgfsError> {
         if !Self::is_valid_device(path) {
             return Err(AgfsError::not_found(path));
         }
@@ -68,7 +68,7 @@ impl FileSystem for DevFS {
             "/zero" => {
                 // /dev/zero returns infinite zeros
                 let count = if size < 0 { 4096 } else { size as usize };
-                let mut data = vec![0u8; count];
+                let data = vec![0u8; count];
                 // Apply offset if specified (for /dev/zero, offset is ignored, returns zeros)
                 Ok(data)
             }

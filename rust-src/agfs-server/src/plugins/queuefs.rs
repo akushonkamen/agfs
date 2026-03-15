@@ -10,7 +10,8 @@ use tokio::sync::Mutex;
 
 /// Queue item
 #[derive(Debug, Clone)]
-struct QueueItem {
+#[allow(dead_code)]
+pub struct QueueItem {
     id: u64,
     data: Vec<u8>,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -200,7 +201,7 @@ impl FileSystem for QueueFS {
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<FileInfo>, AgfsError> {
-        if path != "/" && path != "" {
+        if path != "/" && !path.is_empty() {
             return Err(AgfsError::not_found(path));
         }
 
@@ -218,7 +219,7 @@ impl FileSystem for QueueFS {
     }
 
     fn stat(&self, path: &str) -> Result<FileInfo, AgfsError> {
-        if path == "/" || path == "" {
+        if path == "/" || path.is_empty() {
             return Ok(FileInfo {
                 name: String::new(),
                 size: self.queues.len() as i64,

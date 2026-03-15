@@ -95,6 +95,11 @@ impl StreamFS {
     pub fn len(&self) -> usize {
         self.streams.len()
     }
+
+    /// Check if there are no active streams
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty()
+    }
 }
 
 impl Default for StreamFS {
@@ -122,7 +127,7 @@ impl FileSystem for StreamFS {
         self.remove(path)
     }
 
-    fn read(&self, path: &str, _offset: i64, _size: i64) -> Result<Vec<u8>, AgfsError> {
+    fn read(&self, _path: &str, _offset: i64, _size: i64) -> Result<Vec<u8>, AgfsError> {
         // Streams don't support random access reads
         Err(AgfsError::NotSupported)
     }

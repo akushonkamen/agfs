@@ -146,7 +146,7 @@ impl FileSystem for Kvfs {
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<FileInfo>, AgfsError> {
-        if path != "/" && path != "" {
+        if path != "/" && !path.is_empty() {
             return Err(AgfsError::not_found(path));
         }
 
@@ -166,7 +166,7 @@ impl FileSystem for Kvfs {
     }
 
     fn stat(&self, path: &str) -> Result<FileInfo, AgfsError> {
-        if path == "/" || path == "" {
+        if path == "/" || path.is_empty() {
             return Ok(FileInfo {
                 name: String::new(),
                 size: self.store.len() as i64,

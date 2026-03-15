@@ -403,7 +403,7 @@ impl std::io::Write for MemWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.fs.write(&self.path, buf, -1, WriteFlag::APPEND)
             .map(|n| n as usize)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            .map_err(std::io::Error::other)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

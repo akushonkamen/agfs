@@ -74,6 +74,7 @@ dependencies = [
  "matchit 0.8.6",
  "md5",
  "radix_trie",
+ "rand 0.8.5",
  "regex",
  "reqwest",
  "serde",
