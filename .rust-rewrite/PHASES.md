@@ -5,8 +5,8 @@
 | Phase | 名称 | 状态 | Teammate | 开始时间 | 完成时间 |
 |-------|------|------|----------|----------|----------|
 | 0 | Workspace 初始化 | completed | infra-engineer | 2025-03-15 | 2025-03-15 |
-| 1 | 核心类型与 FileSystem trait | pending | core-engineer | - | - |
-| 2 | MountableFS 与 HTTP 层 | pending | server-engineer | - | - |
+| 1 | 核心类型与 FileSystem trait | completed | core-engineer | 2025-03-15 | 2025-03-15 |
+| 2 | MountableFS 与 HTTP 层 | in_progress | server-engineer | 2025-03-15 | - |
 | 3 | 基础 Plugins（无外部依赖） | pending | plugin-basic-engineer | - | - |
 | 4 | 流与队列 Plugins | pending | plugin-stream-engineer | - | - |
 | 5 | 存储 Plugins（外部依赖） | pending | plugin-storage-engineer | - | - |
