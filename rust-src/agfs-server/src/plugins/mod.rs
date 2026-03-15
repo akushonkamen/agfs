@@ -4,16 +4,20 @@
 
 pub mod devfs;
 pub mod empty;
+pub mod gptfs;
 pub mod hellofs;
+pub mod httpfs;
 pub mod kvfs;
 pub mod localfs;
 pub mod memfs;
+pub mod proxyfs;
 pub mod queuefs;
 pub mod s3fs;
 pub mod sqlfs;
 pub mod sqlfs2;
 pub mod streamfs;
 pub mod streamrotatefs;
+pub mod vectorfs;
 
 // Re-export plugin factory functions
 pub use empty::create_empty_plugin;
