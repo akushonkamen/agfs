@@ -1,5 +1,5 @@
 [workspace]
-members = ["server", "sdk", "fuse"]
+members = ["server", "sdk", "fuse", "python-bindings"]
 resolver = "2"
 
 [workspace.package]

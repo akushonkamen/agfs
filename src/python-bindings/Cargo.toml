@@ -1,0 +1,16 @@
+[package]
+name = "ctxfs-python"
+version.workspace = true
+edition.workspace = true
+description = "Python bindings for CtxFS using PyO3"
+authors = ["CtxFS Contributors"]
+license = "MIT"
+
+[lib]
+name = "ctxfs"
+crate-type = ["cdylib"]
+
+[dependencies]
+ctxfs-sdk = { path = "../sdk" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3", "abi3-py311"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
