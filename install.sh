@@ -145,13 +145,13 @@ install_client_from_source() {
         return 1
     fi
 
-    if [ ! -d "agfs-shell" ]; then
+    if [ ! -d "rust-src/agfs-shell" ]; then
         echo "Error: agfs-shell directory not found"
         return 1
     fi
 
     # Install using pip
-    if pip3 install -e agfs-shell 2>&1 | while read -r line; do echo "  $line"; done; then
+    if pip3 install -e rust-src/agfs-shell 2>&1 | while read -r line; do echo "  $line"; done; then
         echo "✓ agfs-shell installed"
     else
         echo "Warning: agfs-shell installation failed"

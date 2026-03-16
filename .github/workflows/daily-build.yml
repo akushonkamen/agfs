@@ -81,7 +81,7 @@ jobs:
         if: matrix.arch == 'amd64' || matrix.arch == 'arm64'
         shell: bash
         run: |
-          cd agfs-shell
+          cd rust-src/agfs-shell
 
           # Find uv command
           if command -v uv &> /dev/null; then

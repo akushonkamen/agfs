@@ -18,18 +18,15 @@
 ## 📁 目录结构
 
 ```
-agfs/                              ← 原始 Go 项目根（只读，禁止修改）
-  agfs-server/                     ← Go 服务端（核心）
-  agfs-sdk/go/                     ← Go SDK
-  agfs-fuse/                       ← Go FUSE 客户端
-  agfs-mcp/                        ← Python MCP 集成（不重写）
-  agfs-shell/                      ← Python shell（不重写）
-
-rust-src/                          ← Rust 重写目标
-  Cargo.toml                       ← workspace
-  agfs-server/                     ← Rust 服务端（对应 Go agfs-server）
-  agfs-sdk/                        ← Rust SDK crate（对应 Go agfs-sdk）
-  agfs-fuse/                       ← Rust FUSE（对应 Go agfs-fuse）
+agfs/                              ← 项目根目录
+  rust-src/                        ← 完整项目目录（Rust + Python 组件）
+    Cargo.toml                     ← workspace
+    agfs-server/                   ← Rust 服务端（对应 Go agfs-server）
+    agfs-sdk/                      ← Rust SDK crate（对应 Go agfs-sdk）
+    agfs-fuse/                     ← Rust FUSE（对应 Go agfs-fuse）
+    agfs-mcp/                      ← Python MCP 集成（不重写）
+    agfs-shell/                    ← Python shell（不重写）
+    python-sdk/                    ← Python SDK（对应原 agfs-sdk/python）
 
 .rust-rewrite/                     ← 团队协作工作区
   PHASES.md                        ← Leader 维护的 Phase 计划
@@ -205,7 +202,6 @@ git commit -m "[agfs-server] feat: implement memfs plugin with Read/Write/ReadDi
 ---
 
 ## 🚫 禁止事项
-- 不得修改 agfs-mcp/ 和 agfs-shell/（Python 代码不在重写范围）
-- 不得修改项目根下的任何 Go 源码
+- 不得修改 rust-src/agfs-mcp/ 和 rust-src/agfs-shell/（Python 代码不在重写范围）
 - 不得在没有 Leader 裁决的情况下变更技术栈选型
 - 不得手动删除 Go 源码，必须通过 `.claude/hooks/delete_go_src.sh` 脚本
