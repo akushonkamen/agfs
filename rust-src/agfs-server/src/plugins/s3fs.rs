@@ -41,7 +41,7 @@ impl Default for S3Config {
 
 /// S3 metadata cache entry
 #[derive(Debug, Clone)]
-struct S3Metadata {
+pub struct S3Metadata {
     size: i64,
     mod_time: chrono::DateTime<chrono::Utc>,
     etag: Option<String>,

@@ -42,7 +42,7 @@ impl Default for EmbeddingConfig {
 
 /// Vector document with embedding
 #[derive(Debug, Clone)]
-struct VectorDocument {
+pub struct VectorDocument {
     id: String,
     content: String,
     embedding: Option<Vec<f32>>,
