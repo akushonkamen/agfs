@@ -2,7 +2,7 @@
 set -e
 
 # AGFS Installation Script
-# This script downloads and installs the latest daily build of agfs-server and agfs-shell
+# AGFS has been rewritten in Rust - this script helps install from source or pre-built binaries
 
 REPO="c4pt0r/agfs"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
@@ -47,11 +47,15 @@ detect_platform() {
     echo "Detected platform: $OS-$ARCH"
 }
 
-# Get the nightly build tag
-get_latest_tag() {
-    echo "Fetching nightly build..."
-    LATEST_TAG="nightly"
-    echo "Using nightly build"
+# Check if Rust is installed
+check_rust() {
+    if command -v cargo >/dev/null 2>&1; then
+        echo "✓ Rust/Cargo found"
+        return 0
+    else
+        echo "✗ Rust not found"
+        return 1
+    fi
 }
 
 # Check Python version
@@ -70,57 +74,44 @@ check_python() {
         return 1
     fi
 
-    echo "Found Python $PYTHON_VERSION"
+    echo "✓ Found Python $PYTHON_VERSION"
     return 0
 }
 
-# Install agfs-server
-install_server() {
+# Install agfs-server from source
+install_server_from_source() {
     echo ""
-    echo "Installing agfs-server..."
+    echo "Installing agfs-server from source..."
 
-    # Get the date from the nightly release
-    DATE=$(curl -sL "https://api.github.com/repos/$REPO/releases/tags/$LATEST_TAG" | \
-        grep '"name":' | \
-        head -n 1 | \
-        sed -E 's/.*\(([0-9]+)\).*/\1/')
-
-    if [ -z "$DATE" ]; then
-        echo "Error: Could not determine build date from nightly release"
+    if ! check_rust; then
+        echo ""
+        echo "Rust is required to build agfs-server from source."
+        echo "Install Rust from https://rustup.rs/"
+        echo ""
+        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        echo ""
         exit 1
     fi
 
-    if [ "$OS" = "windows" ]; then
-        ARCHIVE="agfs-${OS}-${ARCH}-${DATE}.zip"
-        BINARY="agfs-server-${OS}-${ARCH}.exe"
-    else
-        ARCHIVE="agfs-${OS}-${ARCH}-${DATE}.tar.gz"
-        BINARY="agfs-server-${OS}-${ARCH}"
-    fi
-
-    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE"
-
-    echo "Downloading from: $DOWNLOAD_URL"
-
-    TMP_DIR=$(mktemp -d)
-    cd "$TMP_DIR"
-
-    if ! curl -fsSL -o "$ARCHIVE" "$DOWNLOAD_URL"; then
-        echo "Error: Failed to download $ARCHIVE"
-        rm -rf "$TMP_DIR"
+    # Check if we're in the agfs directory
+    if [ ! -f "Cargo.toml" ] && [ ! -f "rust-src/Cargo.toml" ]; then
+        echo "Error: Please run this script from the agfs repository root"
+        echo ""
+        echo "Clone the repository first:"
+        echo "  git clone https://github.com/$REPO.git"
+        echo "  cd agfs"
+        echo "  ./install.sh"
         exit 1
     fi
 
-    echo "Extracting archive..."
-    if [ "$OS" = "windows" ]; then
-        unzip -q "$ARCHIVE"
-    else
-        tar -xzf "$ARCHIVE"
-    fi
+    cd rust-src
 
-    if [ ! -f "$BINARY" ]; then
-        echo "Error: Binary $BINARY not found in archive"
-        rm -rf "$TMP_DIR"
+    echo "Building agfs-server (this may take a few minutes)..."
+    if cargo build --release 2>&1 | while read -r line; do echo "  $line"; done; then
+        echo ""
+        echo "✓ Build successful"
+    else
+        echo "Error: Build failed"
         exit 1
     fi
 
@@ -128,77 +119,23 @@ install_server() {
     mkdir -p "$INSTALL_DIR"
 
     # Install binary
-    mv "$BINARY" "$INSTALL_DIR/agfs-server"
+    cp target/release/agfs-server "$INSTALL_DIR/agfs-server"
     chmod +x "$INSTALL_DIR/agfs-server"
-
-    # Clean up
-    cd - > /dev/null
-    rm -rf "$TMP_DIR"
 
     echo "✓ agfs-server installed to $INSTALL_DIR/agfs-server"
 
-    # Install systemd service on Linux systems
-    if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
-        install_systemd_service
+    # Install agfs-fuse if built
+    if [ -f "target/release/agfs-fuse" ]; then
+        cp target/release/agfs-fuse "$INSTALL_DIR/agfs-fuse"
+        chmod +x "$INSTALL_DIR/agfs-fuse"
+        echo "✓ agfs-fuse installed to $INSTALL_DIR/agfs-fuse"
     fi
+
+    cd - > /dev/null
 }
 
-# Install systemd service
-install_systemd_service() {
-    echo ""
-    echo "Installing systemd service..."
-
-    # Download service file template (use master branch, not release tag)
-    SERVICE_URL="https://raw.githubusercontent.com/$REPO/master/agfs-server/agfs-server.service"
-    TMP_SERVICE=$(mktemp)
-
-    if ! curl -fsSL -o "$TMP_SERVICE" "$SERVICE_URL" 2>/dev/null; then
-        echo "Warning: Could not download systemd service file, skipping service installation"
-        rm -f "$TMP_SERVICE"
-        return 1
-    fi
-
-    # Get current user and group
-    CURRENT_USER=$(whoami)
-    CURRENT_GROUP=$(id -gn)
-
-    # Replace placeholders
-    sed -e "s|%USER%|$CURRENT_USER|g" \
-        -e "s|%GROUP%|$CURRENT_GROUP|g" \
-        -e "s|%INSTALL_DIR%|$INSTALL_DIR|g" \
-        "$TMP_SERVICE" > "$TMP_SERVICE.processed"
-
-    # Install systemd service (requires root/sudo)
-    if [ "$CURRENT_USER" = "root" ]; then
-        # Running as root
-        cp "$TMP_SERVICE.processed" /etc/systemd/system/agfs-server.service
-        systemctl daemon-reload
-        echo "✓ systemd service installed to /etc/systemd/system/agfs-server.service"
-        echo ""
-        echo "To enable and start the service:"
-        echo "  systemctl enable agfs-server"
-        echo "  systemctl start agfs-server"
-    else
-        # Require sudo with password prompt
-        echo "Installing systemd service requires root privileges."
-        if ! sudo cp "$TMP_SERVICE.processed" /etc/systemd/system/agfs-server.service; then
-            echo "Error: Failed to install systemd service (sudo required)"
-            rm -f "$TMP_SERVICE" "$TMP_SERVICE.processed"
-            return 1
-        fi
-        sudo systemctl daemon-reload
-        echo "✓ systemd service installed to /etc/systemd/system/agfs-server.service"
-        echo ""
-        echo "To enable and start the service:"
-        echo "  sudo systemctl enable agfs-server"
-        echo "  sudo systemctl start agfs-server"
-    fi
-
-    rm -f "$TMP_SERVICE" "$TMP_SERVICE.processed"
-}
-
-# Install agfs-shell
-install_client() {
+# Install agfs-shell from source
+install_client_from_source() {
     echo ""
     echo "Installing agfs-shell..."
 
@@ -208,64 +145,18 @@ install_client() {
         return 1
     fi
 
-    # Only build for supported platforms
-    if [ "$OS" = "windows" ]; then
-        if [ "$ARCH" != "amd64" ] && [ "$ARCH" != "arm64" ]; then
-            echo "Skipping agfs-shell: Not available for $OS-$ARCH"
-            return 1
-        fi
-        SHELL_ARCHIVE="agfs-shell-${OS}-${ARCH}.zip"
-    else
-        if [ "$ARCH" != "amd64" ] && ! { [ "$OS" = "darwin" ] && [ "$ARCH" = "arm64" ]; } && ! { [ "$OS" = "linux" ] && [ "$ARCH" = "arm64" ]; }; then
-            echo "Skipping agfs-shell: Not available for $OS-$ARCH"
-            return 1
-        fi
-        SHELL_ARCHIVE="agfs-shell-${OS}-${ARCH}.tar.gz"
-    fi
-
-    SHELL_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$SHELL_ARCHIVE"
-
-    echo "Downloading from: $SHELL_URL"
-
-    TMP_DIR=$(mktemp -d)
-    cd "$TMP_DIR"
-
-    if ! curl -fsSL -o "$SHELL_ARCHIVE" "$SHELL_URL"; then
-        echo "Warning: Failed to download agfs-shell, skipping client installation"
-        rm -rf "$TMP_DIR"
+    if [ ! -d "agfs-shell" ]; then
+        echo "Error: agfs-shell directory not found"
         return 1
     fi
 
-    echo "Extracting archive..."
-    if [ "$OS" = "windows" ]; then
-        unzip -q "$SHELL_ARCHIVE"
+    # Install using pip
+    if pip3 install -e agfs-shell 2>&1 | while read -r line; do echo "  $line"; done; then
+        echo "✓ agfs-shell installed"
     else
-        tar -xzf "$SHELL_ARCHIVE"
-    fi
-
-    if [ ! -d "agfs-shell-portable" ]; then
-        echo "Error: agfs-shell-portable directory not found in archive"
-        rm -rf "$TMP_DIR"
+        echo "Warning: agfs-shell installation failed"
         return 1
     fi
-
-    # Remove old installation
-    rm -rf "$AGFS_SHELL_DIR"
-    mkdir -p "$AGFS_SHELL_DIR"
-
-    # Copy portable directory
-    cp -r agfs-shell-portable/* "$AGFS_SHELL_DIR/"
-
-    # Create symlink (rename to 'agfs' for convenience)
-    mkdir -p "$INSTALL_DIR"
-    ln -sf "$AGFS_SHELL_DIR/agfs-shell" "$INSTALL_DIR/agfs"
-
-    # Clean up
-    cd - > /dev/null
-    rm -rf "$TMP_DIR"
-
-    echo "✓ agfs-shell installed to $AGFS_SHELL_DIR"
-    echo "  Symlink created: $INSTALL_DIR/agfs"
 }
 
 show_completion() {
@@ -275,16 +166,16 @@ show_completion() {
     echo "----------------------------------"
     echo ""
 
-    if [ "$INSTALL_SERVER" = "yes" ]; then
+    if [ "$INSTALL_SERVER" = "yes" ] && [ -f "$INSTALL_DIR/agfs-server" ]; then
         echo "Server: agfs-server"
         echo "  Location: $INSTALL_DIR/agfs-server"
         echo "  Usage: agfs-server --help"
         echo ""
     fi
 
-    if [ "$INSTALL_CLIENT" = "yes" ] && [ -f "$INSTALL_DIR/agfs" ]; then
+    if command -v agfs >/dev/null 2>&1; then
         echo "Client: agfs"
-        echo "  Location: $INSTALL_DIR/agfs"
+        echo "  Location: $(command -v agfs)"
         echo "  Usage: agfs --help"
         echo "  Interactive: agfs"
         echo ""
@@ -303,8 +194,10 @@ show_completion() {
     esac
 
     echo "Quick Start:"
-    echo "  1. Start server: agfs-server"
+    echo "  1. Start server: agfs-server --config config.yaml"
     echo "  2. Use client: agfs"
+    echo ""
+    echo "For more information, see https://github.com/$REPO"
 }
 
 main() {
@@ -313,16 +206,18 @@ main() {
     echo "          AGFS Installer           "
     echo "----------------------------------"
     echo ""
+    echo "AGFS is now written in Rust!"
+    echo "This installer will build from source."
+    echo ""
 
     detect_platform
-    get_latest_tag
 
     if [ "$INSTALL_SERVER" = "yes" ]; then
-        install_server
+        install_server_from_source
     fi
 
     if [ "$INSTALL_CLIENT" = "yes" ]; then
-        install_client || true  # Don't fail if client install fails
+        install_client_from_source || true  # Don't fail if client install fails
     fi
 
     show_completion
