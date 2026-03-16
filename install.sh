@@ -94,7 +94,7 @@ install_server_from_source() {
     fi
 
     # Check if we're in the agfs directory
-    if [ ! -f "Cargo.toml" ] && [ ! -f "rust-src/Cargo.toml" ]; then
+    if [ ! -f "src/Cargo.toml" ]; then
         echo "Error: Please run this script from the agfs repository root"
         echo ""
         echo "Clone the repository first:"
@@ -104,7 +104,7 @@ install_server_from_source() {
         exit 1
     fi
 
-    cd rust-src
+    cd src
 
     echo "Building agfs-server (this may take a few minutes)..."
     if cargo build --release 2>&1 | while read -r line; do echo "  $line"; done; then

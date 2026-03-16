@@ -69,8 +69,8 @@ echo ""
 
 # ── Rust 构建状态 ─────────────────────────────────────────────────────────────
 echo -e "${BOLD}🔨 Rust 构建状态${NC}"
-if [[ -f "$ROOT_DIR/rust-src/Cargo.toml" ]]; then
-  cd "$ROOT_DIR/rust-src"
+if [[ -f "$ROOT_DIR/src/Cargo.toml" ]]; then
+  cd "$ROOT_DIR/src"
   if cargo check --quiet 2>/dev/null; then
     echo -e "  ${GREEN}cargo check ✅ 通过${NC}"
   else
@@ -81,7 +81,7 @@ if [[ -f "$ROOT_DIR/rust-src/Cargo.toml" ]]; then
   echo -e "  测试: $test_count"
   cd "$ROOT_DIR"
 else
-  echo -e "  ${YELLOW}rust-src/Cargo.toml 不存在（项目未初始化）${NC}"
+  echo -e "  ${YELLOW}src/Cargo.toml 不存在（项目未初始化）${NC}"
 fi
 echo ""
 

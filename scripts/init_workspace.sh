@@ -46,7 +46,7 @@ check_prereqs() {
 create_structure() {
   info "创建团队工作区目录结构..."
   
-  mkdir -p "$ROOT_DIR"/{.rust-rewrite/{team,reports,phases},.claude,rust-src,scripts}
+  mkdir -p "$ROOT_DIR"/{.rust-rewrite/{team,reports,phases},.claude,src,scripts}
   
   # 如果 go-src 不是符号链接且路径存在，创建符号链接
   if [[ -d "$GO_SRC" && "$GO_SRC" != "$ROOT_DIR/go-src" ]]; then
@@ -77,7 +77,7 @@ copy_templates() {
 init_rust_project() {
   info "初始化 Rust 项目..."
   
-  local RUST_DIR="$ROOT_DIR/rust-src"
+  local RUST_DIR="$ROOT_DIR/src"
   
   if [[ -f "$RUST_DIR/Cargo.toml" ]]; then
     warn "Rust 项目已存在，跳过初始化"
@@ -164,7 +164,7 @@ print_instructions() {
   echo "   ├── CLAUDE.md              ← 团队共享规范（所有 Agent 自动读取）"
   echo "   ├── LEADER_PROMPT.md       ← Leader 初始 Prompt"
   echo "   ├── go-src/                ← Go 原始项目（只读）"
-  echo "   ├── rust-src/              ← Rust 重写目标"
+  echo "   ├── src/              ← Rust 重写目标"
   echo "   ├── .claude/settings.json  ← Agent Teams 已启用"
   echo "   └── .rust-rewrite/         ← 团队协作工作区"
   echo "       ├── PHASES.md          ← Phase 计划追踪"

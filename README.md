@@ -1,19 +1,19 @@
-# <img src="./assets/logo-white.png" alt="AGFS Logo" height="40" style="vertical-align: middle;"/>
+# <img src="./assets/logo-white.png" alt="CtxFS Logo" height="40" style="vertical-align: middle;"/>
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **Aggregated File System (Agent FS)** - Everything is a file, in RESTful APIs. A tribute to Plan9.
 
-> **Note**: AGFS has been rewritten in [Rust](https://www.rust-lang.org/) for better performance, memory safety, and maintainability. The API remains fully compatible with the original Go implementation.
+> **Note**: CtxFS has been rewritten in [Rust](https://www.rust-lang.org/) for better performance, memory safety, and maintainability. The API remains fully compatible with the original Go implementation.
 
-## Why AGFS?
+## Why CtxFS?
 
 When coordinating multiple AI Agents in a distributed environment, agents need access to various backend services: message queues, databases, object storage, KV stores, and more. The traditional approach requires writing specialized API calls for each service, meaning agents must understand many different interfaces.
 
-The core idea of AGFS is simple: **unify all services as file system operations**.
+The core idea of CtxFS is simple: **unify all services as file system operations**.
 
 ```
-Traditional approach                    AGFS approach
+Traditional approach                    CtxFS approach
 ------------------------------------------------------------------
 redis.set("key", "value")          ->   echo "value" > /kvfs/keys/mykey
 sqs.send_message(queue, msg)       ->   echo "msg" > /queuefs/q/enqueue
@@ -32,7 +32,7 @@ The benefits:
 
 Compared to the original Go implementation, the Rust version offers:
 
-| Metric | Go AGFS | Rust AGFS | Improvement |
+| Metric | Go CtxFS | Rust CtxFS | Improvement |
 |--------|---------|-----------|-------------|
 | Binary Size | 33MB | 8MB | **76% smaller** |
 | Memory Usage | 15MB | 7MB | **54% less** |
@@ -51,7 +51,7 @@ git clone https://github.com/c4pt0r/agfs.git
 cd agfs
 
 # Build the server
-cd rust-src
+cd src
 cargo build --release
 
 # The binaries will be in:
@@ -109,10 +109,10 @@ queuefs/  kvfs/  s3fs/  sqlfs/  heartbeatfs/  memfs/  ...
 
 ## FUSE Support
 
-AGFS can be mounted as a native filesystem on Linux using FUSE. This allows any program to interact with AGFS services using standard file operations, not just the agfs-shell.
+CtxFS can be mounted as a native filesystem on Linux using FUSE. This allows any program to interact with CtxFS services using standard file operations, not just the agfs-shell.
 
 ```bash
-# Mount AGFS to /mnt/agfs
+# Mount CtxFS to /mnt/agfs
 agfs-fuse --agfs-server-url http://localhost:8080 --mount /mnt/agfs
 
 # Now use standard tools
@@ -121,7 +121,7 @@ echo "hello" > /mnt/agfs/kvfs/keys/mykey
 cat /mnt/agfs/queuefs/tasks/dequeue
 ```
 
-This makes AGFS accessible to any application, script, or programming language that can read and write files.
+This makes CtxFS accessible to any application, script, or programming language that can read and write files.
 
 ## Examples
 
@@ -198,9 +198,9 @@ agfs:/> cp local:/tmp/data.txt /s3fs/mybucket/   # upload local file to S3
 agfs:/> cp /s3fs/mybucket/config.json /memfs/    # copy S3 file to memory
 ```
 
-## AGFS Scripts
+## CtxFS Scripts
 
-AGFS shell supports scripting with `.as` files. Scripts use familiar shell syntax and can be executed directly.
+CtxFS shell supports scripting with `.as` files. Scripts use familiar shell syntax and can be executed directly.
 
 **task_worker.as** - A simple task queue worker:
 
@@ -247,7 +247,7 @@ Run scripts directly:
 ./enqueue_task.as "process report.pdf"
 ```
 
-See more examples in [rust-src/agfs-shell/examples](./rust-src/agfs-shell/examples/).
+See more examples in [src/agfs-shell/examples](./src/agfs-shell/examples/).
 
 ## Use Case: AI Agent Task Loop
 
@@ -261,20 +261,20 @@ while True:
         agfs.write(f"/kvfs/keys/result_{task.id}", result)
 ```
 
-See [task_loop.py](./rust-src/agfs-mcp/demos/task_loop.py) for a complete example.
+See [task_loop.py](./src/agfs-mcp/demos/task_loop.py) for a complete example.
 
 ## Documentation
 
-- [rust-src/agfs-server](./rust-src/agfs-server/) - Server implementation (Rust)
-- [rust-src/agfs-sdk](./rust-src/agfs-sdk/) - SDK and type definitions (Rust)
-- [rust-src/agfs-fuse](./rust-src/agfs-fuse/) - FUSE filesystem mount (Rust, Linux)
-- [rust-src/agfs-shell](./rust-src/agfs-shell/) - Interactive shell client (Python)
-- [rust-src/agfs-mcp](./rust-src/agfs-mcp/) - MCP integration (Python)
-- [rust-src/python-sdk](./rust-src/python-sdk/) - Python SDK
+- [src/agfs-server](./src/agfs-server/) - Server implementation (Rust)
+- [src/agfs-sdk](./src/agfs-sdk/) - SDK and type definitions (Rust)
+- [src/agfs-fuse](./src/agfs-fuse/) - FUSE filesystem mount (Rust, Linux)
+- [src/agfs-shell](./src/agfs-shell/) - Interactive shell client (Python)
+- [src/agfs-mcp](./src/agfs-mcp/) - MCP integration (Python)
+- [src/python-sdk](./src/python-sdk/) - Python SDK
 
 ## Architecture
 
-AGFS is built with a plugin architecture:
+CtxFS is built with a plugin architecture:
 
 ```
 agfs-server (Rust)
@@ -290,7 +290,7 @@ agfs-server (Rust)
     ├── streamfs - Stream multiplexing
     ├── heartbeatfs - Agent heartbeat tracking
     ├── httpfs - HTTP request proxy
-    ├── proxyfs - AGFS-to-AGFS proxy
+    ├── proxyfs - CtxFS-to-CtxFS proxy
     └── ... (more plugins)
 ```
 

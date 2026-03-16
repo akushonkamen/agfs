@@ -1,0 +1,20 @@
+[package]
+name = "ctxfs-sdk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+bitflags = { version = "2.6", features = ["serde"] }
+urlencoding = "2.1"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
