@@ -215,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut signals = Signals::new([SIGINT, signal_hook::consts::SIGTERM])?;
 
     // Wait for signal
-    for _ in signals.forever() {
+    if signals.forever().next().is_some() {
         tracing::info!("Received shutdown signal, unmounting...");
 
         // Unmount using the mount handle
@@ -224,7 +224,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         tracing::info!("AGFS unmounted successfully");
-        break;
     }
 
     Ok(())

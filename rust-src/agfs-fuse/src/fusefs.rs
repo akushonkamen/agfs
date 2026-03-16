@@ -7,7 +7,6 @@ use agfs_sdk::{Client, FileInfo, WriteFlag};
 use chrono::Utc;
 use fuse3::raw::prelude::*;
 use fuse3::{FileType, Result, SetAttr, Timestamp};
-use futures_util::StreamExt;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -153,7 +152,7 @@ impl AGFSFS {
             FileAttr {
                 ino,
                 size: info.size as u64,
-                blocks: (info.size as u64 + 511) / 512,
+                blocks: (info.size as u64).div_ceil(512),
                 atime: ts,
                 mtime: ts,
                 ctime: ts,
@@ -174,7 +173,7 @@ impl AGFSFS {
             FileAttr {
                 ino,
                 size: info.size as u64,
-                blocks: (info.size as u64 + 511) / 512,
+                blocks: (info.size as u64).div_ceil(512),
                 atime: ts,
                 mtime: ts,
                 ctime: ts,
@@ -207,6 +206,7 @@ fn get_parent_path(path: &str) -> String {
 }
 
 /// Convert FUSE open flags to WriteFlag
+#[allow(dead_code)]
 fn convert_open_flags(flags: u32) -> WriteFlag {
     let access_mode = flags & (libc::O_ACCMODE as u32);
 
@@ -245,11 +245,13 @@ fn convert_open_flags(flags: u32) -> WriteFlag {
 }
 
 /// Convert AGFS mode to FUSE file mode
+#[allow(dead_code)]
 pub fn mode_to_file_mode(mode: u32) -> u32 {
     mode
 }
 
 /// Get stable mode with file type bits for FUSE attributes
+#[allow(dead_code)]
 pub fn get_stable_mode(info: &FileInfo) -> u32 {
     let mut mode = info.mode;
 

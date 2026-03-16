@@ -3,6 +3,10 @@ name = "agfs-fuse"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+unprivileged = []
+
 [[bin]]
 name = "agfs-fuse"
 path = "src/main.rs"

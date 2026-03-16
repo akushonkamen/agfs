@@ -230,6 +230,11 @@ impl NodeCache {
         self.nodes.read().await.len()
     }
 
+    /// Check if cache is empty
+    pub async fn is_empty(&self) -> bool {
+        self.nodes.read().await.is_empty()
+    }
+
     /// Clear cache
     pub async fn clear(&self) {
         self.nodes.write().await.clear();

@@ -28,6 +28,7 @@ impl AgfsClient {
         }
     }
 
+    #[allow(dead_code)]
     fn new_with_url(url: &str) -> Self {
         Self {
             client: Client::new(),
@@ -41,6 +42,7 @@ impl AgfsClient {
         self.handle_response(response).await
     }
 
+    #[allow(dead_code)]
     async fn post<T: DeserializeOwned, B: serde::Serialize>(
         &self,
         path: &str,
@@ -51,6 +53,7 @@ impl AgfsClient {
         self.handle_response(response).await
     }
 
+    #[allow(dead_code)]
     async fn put<T: DeserializeOwned, B: serde::Serialize>(
         &self,
         path: &str,
@@ -61,6 +64,7 @@ impl AgfsClient {
         self.handle_response(response).await
     }
 
+    #[allow(dead_code)]
     async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Box<dyn std::error::Error>> {
         let url = format!("{}{}", self.base_url, path);
         let response = self.client.delete(&url).send().await?;
