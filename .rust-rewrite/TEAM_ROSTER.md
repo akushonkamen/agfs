@@ -4,7 +4,7 @@
 
 | 代号 | Phase | 状态 | Spawn 时间 | Dismiss 时间 |
 |------|-------|------|------------|--------------|
-| rewrite-lead | - | active | - | - |
+| rewrite-lead | - | dismissed | 2025-03-15 | 2025-03-16 |
 | infra-engineer | Phase 0 | dismissed | 2025-03-15 | 2025-03-15 |
 | core-engineer | Phase 1 | dismissed | 2025-03-15 | 2025-03-15 |
 | server-engineer | Phase 2 | dismissed | 2025-03-15 | 2025-03-15 |
@@ -13,4 +13,4 @@
 | plugin-storage-engineer | Phase 5 | dismissed | 2025-03-15 | 2025-03-15 |
 | plugin-advanced-engineer | Phase 6 | dismissed | 2025-03-15 | 2025-03-15 |
 | fuse-engineer | Phase 7 | dismissed | 2025-03-15 | 2025-03-16 |
-| integration-engineer | Phase 8 | active | 2025-03-16 | - |
+| integration-engineer | Phase 8 | dismissed | 2025-03-16 | 2025-03-16 |
