@@ -5,6 +5,7 @@
 use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData, WriteFlag};
 use chrono::Utc;
 use sqlx::{Row, SqlitePool};
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// SQL file system with SQLite backend
@@ -120,71 +121,101 @@ impl SqlFS {
             .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
         Ok(count > 0)
     }
+
+    /// Helper to run async code in sync context without runtime nesting
+    fn run_in_blocking<F, R>(&self, f: F) -> Result<R, AgfsError>
+    where
+        F: FnOnce(Arc<SqlitePool>) -> Pin<Box<dyn futures::Future<Output = Result<R, AgfsError>> + Send>> + Send + 'static,
+        R: Send + 'static,
+    {
+        let pool = self.pool.clone();
+
+        // Use std::thread::spawn instead of tokio::task::spawn_blocking
+        // since we need to block on the result and we can't await
+        let handle = std::thread::spawn(move || {
+            // Create a new runtime within the thread
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| AgfsError::internal(format!("failed to create runtime: {}", e)))?;
+            rt.block_on(f(pool))
+        });
+
+        handle.join().map_err(|e| AgfsError::internal(format!("thread join failed: {:?}", e)))?
+    }
 }
 
 impl FileSystem for SqlFS {
     fn create(&self, path: &str) -> Result<(), AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
-            if self.file_exists(path).await? {
-                return Err(AgfsError::already_exists(path));
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            // Check if file exists
+            let files_table = format!("{}_files", table_prefix);
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {} WHERE path = $1", files_table))
+                .bind(&path)
+                .fetch_one(&*pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+            if count > 0 {
+                return Err(AgfsError::already_exists(&path));
             }
 
-            let files_table = self.files_table();
             let now = Utc::now().to_rfc3339();
 
             sqlx::query(&format!(
                 "INSERT INTO {} (path, data, mode, mod_time, size) VALUES ($1, $2, $3, $4, $5)",
                 files_table
             ))
-            .bind(path)
+            .bind(&path)
             .bind(Vec::<u8>::new())
             .bind(0i64)  // mode as i64 for compatibility
             .bind(&now)
             .bind(0i64)
-            .execute(&*self.pool)
+            .execute(&*pool)
             .await
             .map_err(|e| AgfsError::internal(format!("Insert failed: {}", e)))?;
 
             Ok(())
-        })
+        }))
     }
 
     fn mkdir(&self, path: &str, perm: u32) -> Result<(), AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
+        let perm = perm as i64;
 
-        runtime.block_on(async move {
-            let dirs_table = self.dirs_table();
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let dirs_table = format!("{}_dirs", table_prefix);
             let now = Utc::now().to_rfc3339();
 
             sqlx::query(&format!(
                 "INSERT INTO {} (path, mode, mod_time) VALUES ($1, $2, $3) ON CONFLICT (path) DO NOTHING",
                 dirs_table
             ))
-            .bind(path)
-            .bind(perm as i64)  // u32 to i64
+            .bind(&path)
+            .bind(perm)
             .bind(&now)
-            .execute(&*self.pool)
+            .execute(&*pool)
             .await
             .map_err(|e| AgfsError::internal(format!("Insert dir failed: {}", e)))?;
 
             Ok(())
-        })
+        }))
     }
 
     fn remove(&self, path: &str) -> Result<(), AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
+        self.run_in_blocking(move |pool| Box::pin(async move {
             // Try to remove as file first
-            let files_table = self.files_table();
+            let files_table = format!("{}_files", table_prefix);
             let result = sqlx::query(&format!("DELETE FROM {} WHERE path = $1", files_table))
-                .bind(path)
-                .execute(&*self.pool)
+                .bind(&path)
+                .execute(&*pool)
                 .await;
 
             if let Ok(rows) = result {
@@ -194,119 +225,139 @@ impl FileSystem for SqlFS {
             }
 
             // Try to remove as directory
-            let dirs_table = self.dirs_table();
+            let dirs_table = format!("{}_dirs", table_prefix);
             let result = sqlx::query(&format!("DELETE FROM {} WHERE path = $1", dirs_table))
-                .bind(path)
-                .execute(&*self.pool)
+                .bind(&path)
+                .execute(&*pool)
                 .await
                 .map_err(|e| AgfsError::internal(format!("Delete dir failed: {}", e)))?;
 
             if result.rows_affected() > 0 {
                 Ok(())
             } else {
-                Err(AgfsError::not_found(path))
+                Err(AgfsError::not_found(&path))
             }
-        })
+        }))
     }
 
     fn remove_all(&self, path: &str) -> Result<(), AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
-            let files_table = self.files_table();
-            let dirs_table = self.dirs_table();
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let files_table = format!("{}_files", table_prefix);
+            let dirs_table = format!("{}_dirs", table_prefix);
 
             // Use GLOB pattern matching for SQLite
             let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
 
             sqlx::query(&format!("DELETE FROM {} WHERE path GLOB $1", files_table))
                 .bind(&glob_pattern)
-                .execute(&*self.pool)
+                .execute(&*pool)
                 .await
                 .map_err(|e| AgfsError::internal(format!("Delete files failed: {}", e)))?;
 
             sqlx::query(&format!("DELETE FROM {} WHERE path GLOB $1", dirs_table))
                 .bind(&glob_pattern)
-                .execute(&*self.pool)
+                .execute(&*pool)
                 .await
                 .map_err(|e| AgfsError::internal(format!("Delete dirs failed: {}", e)))?;
 
             Ok(())
-        })
+        }))
     }
 
     fn read(&self, path: &str, offset: i64, size: i64) -> Result<Vec<u8>, AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
-            let files_table = self.files_table();
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let files_table = format!("{}_files", table_prefix);
 
-            // Use SUBSTR with 0-index
-            let data: Vec<u8> = sqlx::query_scalar(&format!(
-                "SELECT SUBSTR(data, $2, $3) FROM {} WHERE path = $1",
-                files_table
-            ))
-            .bind(path)
-            .bind(offset.max(0) + 1) // SUBSTR is 1-indexed
-            .bind(if size < 0 { -1i64 } else { size })
-            .fetch_one(&*self.pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?;
+            let data: Vec<u8> = if size < 0 && offset <= 0 {
+                // Read entire file
+                sqlx::query_scalar(&format!(
+                    "SELECT data FROM {} WHERE path = $1",
+                    files_table
+                ))
+                .bind(&path)
+                .fetch_one(&*pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+            } else {
+                // Use SUBSTR for partial reads
+                // SUBSTR is 1-indexed, so add 1 to offset
+                let substr_offset = offset.max(0) + 1;
+                sqlx::query_scalar(&format!(
+                    "SELECT SUBSTR(data, $2, $3) FROM {} WHERE path = $1",
+                    files_table
+                ))
+                .bind(&path)
+                .bind(substr_offset)
+                .bind(size)
+                .fetch_one(&*pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+            };
 
             Ok(data)
-        })
+        }))
     }
 
     fn write(&self, path: &str, data: &[u8], _offset: i64, _flags: WriteFlag) -> Result<i64, AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
+        let data = data.to_vec();
+        let now = Utc::now().to_rfc3339();
+        let len = data.len() as i64;
 
-        runtime.block_on(async move {
-            let files_table = self.files_table();
-            let now = Utc::now().to_rfc3339();
-            let len = data.len() as i64;
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let files_table = format!("{}_files", table_prefix);
 
-            sqlx::query(&format!(
+            let rows_affected = sqlx::query(&format!(
                 "UPDATE {} SET data = $1, mod_time = $2, size = $3 WHERE path = $4",
                 files_table
             ))
-            .bind(data)
+            .bind(&data)
             .bind(&now)
             .bind(len)
-            .bind(path)
-            .execute(&*self.pool)
+            .bind(&path)
+            .execute(&*pool)
             .await
-            .map_err(|e| AgfsError::internal(format!("Update failed: {}", e)))?;
+            .map_err(|e| AgfsError::internal(format!("Update failed: {}", e)))?
+            .rows_affected();
+
+            if rows_affected == 0 {
+                return Err(AgfsError::not_found(&path));
+            }
 
             Ok(len)
-        })
+        }))
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<FileInfo>, AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
-            let files_table = self.files_table();
-            let dirs_table = self.dirs_table();
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let files_table = format!("{}_files", table_prefix);
+            let dirs_table = format!("{}_dirs", table_prefix);
             let mut files = Vec::new();
 
             // Query files in this directory
-            let glob_pattern = format!("{}/%", path.trim_end_matches('/'));
+            let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
             let file_rows = sqlx::query(&format!(
                 "SELECT path, mode, mod_time, size FROM {} WHERE path GLOB $1",
                 files_table
             ))
             .bind(&glob_pattern)
-            .fetch_all(&*self.pool)
+            .fetch_all(&*pool)
             .await
             .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
 
             for row in file_rows {
                 let full_path: String = row.get("path");
-                let name = full_path.trim_start_matches(path).trim_start_matches('/').to_string();
+                let name = full_path.trim_start_matches(&path).trim_start_matches('/').to_string();
 
                 // Skip if contains another / (subdirectory)
                 if name.contains('/') {
@@ -327,18 +378,19 @@ impl FileSystem for SqlFS {
             }
 
             // Query directories in this directory
+            let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
             let dir_rows = sqlx::query(&format!(
                 "SELECT path, mode, mod_time FROM {} WHERE path GLOB $1",
                 dirs_table
             ))
             .bind(&glob_pattern)
-            .fetch_all(&*self.pool)
+            .fetch_all(&*pool)
             .await
             .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
 
             for row in dir_rows {
                 let full_path: String = row.get("path");
-                let name = full_path.trim_start_matches(path).trim_start_matches('/').to_string();
+                let name = full_path.trim_start_matches(&path).trim_start_matches('/').to_string();
 
                 // Skip if contains another /
                 if name.contains('/') {
@@ -359,14 +411,14 @@ impl FileSystem for SqlFS {
             }
 
             Ok(files)
-        })
+        }))
     }
 
     fn stat(&self, path: &str) -> Result<FileInfo, AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
+        self.run_in_blocking(move |pool| Box::pin(async move {
             if path == "/" || path.is_empty() {
                 return Ok(FileInfo {
                     name: String::new(),
@@ -380,13 +432,13 @@ impl FileSystem for SqlFS {
             }
 
             // Try as file first
-            let files_table = self.files_table();
+            let files_table = format!("{}_files", table_prefix);
             if let Ok(row) = sqlx::query(&format!(
                 "SELECT path, mode, mod_time, size FROM {} WHERE path = $1",
                 files_table
             ))
-            .bind(path)
-            .fetch_one(&*self.pool)
+            .bind(&path)
+            .fetch_one(&*pool)
             .await
             {
                 return Ok(FileInfo {
@@ -403,13 +455,13 @@ impl FileSystem for SqlFS {
             }
 
             // Try as directory
-            let dirs_table = self.dirs_table();
+            let dirs_table = format!("{}_dirs", table_prefix);
             if let Ok(row) = sqlx::query(&format!(
                 "SELECT path, mode, mod_time FROM {} WHERE path = $1",
                 dirs_table
             ))
-            .bind(path)
-            .fetch_one(&*self.pool)
+            .bind(&path)
+            .fetch_one(&*pool)
             .await
             {
                 return Ok(FileInfo {
@@ -425,26 +477,27 @@ impl FileSystem for SqlFS {
                 });
             }
 
-            Err(AgfsError::not_found(path))
-        })
+            Err(AgfsError::not_found(&path))
+        }))
     }
 
     fn rename(&self, old_path: &str, new_path: &str) -> Result<(), AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let old_path = old_path.to_string();
+        let new_path = new_path.to_string();
+        let table_prefix = self.table_prefix.clone();
 
-        runtime.block_on(async move {
-            let files_table = self.files_table();
-            let dirs_table = self.dirs_table();
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let files_table = format!("{}_files", table_prefix);
+            let dirs_table = format!("{}_dirs", table_prefix);
 
             // Try file rename first
             let result = sqlx::query(&format!(
                 "UPDATE {} SET path = $1 WHERE path = $2",
                 files_table
             ))
-            .bind(new_path)
-            .bind(old_path)
-            .execute(&*self.pool)
+            .bind(&new_path)
+            .bind(&old_path)
+            .execute(&*pool)
             .await;
 
             if let Ok(rows) = result {
@@ -458,33 +511,34 @@ impl FileSystem for SqlFS {
                 "UPDATE {} SET path = $1 WHERE path = $2",
                 dirs_table
             ))
-            .bind(new_path)
-            .bind(old_path)
-            .execute(&*self.pool)
+            .bind(&new_path)
+            .bind(&old_path)
+            .execute(&*pool)
             .await
             .map_err(|e| AgfsError::internal(format!("Rename dir failed: {}", e)))?;
 
             if result.rows_affected() > 0 {
                 Ok(())
             } else {
-                Err(AgfsError::not_found(old_path))
+                Err(AgfsError::not_found(&old_path))
             }
-        })
+        }))
     }
 
     fn chmod(&self, path: &str, mode: u32) -> Result<(), AgfsError> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
+        let path = path.to_string();
+        let table_prefix = self.table_prefix.clone();
+        let mode = mode as i64;
 
-        runtime.block_on(async move {
-            let files_table = self.files_table();
-            let dirs_table = self.dirs_table();
+        self.run_in_blocking(move |pool| Box::pin(async move {
+            let files_table = format!("{}_files", table_prefix);
+            let dirs_table = format!("{}_dirs", table_prefix);
 
             // Try file chmod first
             let result = sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", files_table))
-                .bind(mode as i64)  // u32 to i64
-                .bind(path)
-                .execute(&*self.pool)
+                .bind(mode)
+                .bind(&path)
+                .execute(&*pool)
                 .await;
 
             if let Ok(rows) = result {
@@ -495,18 +549,18 @@ impl FileSystem for SqlFS {
 
             // Try directory chmod
             let result = sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", dirs_table))
-                .bind(mode as i64)  // u32 to i64
-                .bind(path)
-                .execute(&*self.pool)
+                .bind(mode)
+                .bind(&path)
+                .execute(&*pool)
                 .await
                 .map_err(|e| AgfsError::internal(format!("Chmod failed: {}", e)))?;
 
             if result.rows_affected() > 0 {
                 Ok(())
             } else {
-                Err(AgfsError::not_found(path))
+                Err(AgfsError::not_found(&path))
             }
-        })
+        }))
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn std::io::Read + Send>, AgfsError> {

@@ -8,6 +8,8 @@ use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::{json, Value};
 use sqlx::{Column, Row, SqlitePool};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -292,18 +294,100 @@ impl SqlFS2 {
             Err(AgfsError::not_found(session_id))
         }
     }
+
+    /// Helper to execute query with a pool reference (for use in spawned threads)
+    /// Returns (session_id, db_name, table_name, query, result, row_count)
+    async fn execute_query_with_pool(
+        pool: &SqlitePool,
+        query: &str,
+        db_name: Option<&str>,
+        table_name: Option<&str>,
+    ) -> Result<(String, String, String, String, Value, i64), AgfsError> {
+        let db_name = db_name.unwrap_or("sqlite").to_string();
+        let table_name = table_name.unwrap_or("table").to_string();
+        let query_string = query.to_string();
+
+        // Execute the query
+        let (result, row_count) = Self::execute_query_inner_with_pool(pool, query).await?;
+
+        // Create a simple session ID (just a hash)
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        query.hash(&mut hasher);
+        let session_id = format!("{:x}", hasher.finish());
+
+        Ok((session_id, db_name, table_name, query_string, result, row_count))
+    }
+
+    /// Execute SELECT query
+    async fn execute_query_inner_with_pool(pool: &SqlitePool, query: &str) -> Result<(Value, i64), AgfsError> {
+        let query = query.trim();
+        let upper = query.to_uppercase();
+
+        if upper.starts_with("SELECT") || upper.starts_with("SHOW")
+            || upper.starts_with("DESCRIBE") || upper.starts_with("EXPLAIN")
+            || upper.starts_with("PRAGMA") {
+            // Query that returns rows
+            Self::execute_select_with_pool(pool, query).await
+        } else {
+            // Query that returns affected rows
+            Self::execute_update_with_pool(pool, query).await
+        }
+    }
+
+    /// Execute SELECT query
+    async fn execute_select_with_pool(pool: &SqlitePool, query: &str) -> Result<(Value, i64), AgfsError> {
+        let rows = sqlx::query(query).fetch_all(pool).await
+            .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+        if rows.is_empty() {
+            return Ok((json!([]), 0));
+        }
+
+        let mut result = Vec::new();
+        for row in rows {
+            let mut obj = serde_json::Map::new();
+            // Use column names
+            if let Some(col) = row.columns().first() {
+                let name = col.name();
+                if let Ok(val) = row.try_get::<String, _>(name) {
+                    obj.insert(name.to_string(), json!(val));
+                } else if let Ok(val) = row.try_get::<i64, _>(name) {
+                    obj.insert(name.to_string(), json!(val));
+                } else if let Ok(val) = row.try_get::<f64, _>(name) {
+                    obj.insert(name.to_string(), json!(val));
+                }
+            }
+            if !obj.is_empty() {
+                result.push(obj);
+            }
+        }
+
+        Ok((json!(result), result.len() as i64))
+    }
+
+    /// Execute UPDATE/INSERT/DELETE query
+    async fn execute_update_with_pool(pool: &SqlitePool, query: &str) -> Result<(Value, i64), AgfsError> {
+        let result = sqlx::query(query).execute(pool).await
+            .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+        let affected = result.rows_affected();
+        Ok((json!({"affected_rows": affected}), affected as i64))
+    }
 }
 
 /// Extract database name from connection string
 fn extract_database_name(conn_str: &str) -> String {
     if let Some(path) = conn_str.strip_prefix("sqlite:") {
-        if let Some(name) = std::path::Path::new(path).file_stem() {
-            name.to_string_lossy().to_string()
-        } else if path == ":memory:" {
-            "memory".to_string()
-        } else {
-            "sqlite".to_string()
+        // Handle SQLite special paths
+        if path == ":memory:" || path == "::memory:" {
+            return "memory".to_string();
         }
+        if let Some(name) = std::path::Path::new(path).file_stem() {
+            return name.to_string_lossy().to_string();
+        }
+        "sqlite".to_string()
     } else {
         "sqlite".to_string()
     }
@@ -394,24 +478,36 @@ impl FileSystem for SqlFS2 {
             let query = std::str::from_utf8(data)
                 .map_err(|_| AgfsError::invalid_argument("invalid UTF-8"))?;
 
-            let runtime = tokio::runtime::Handle::try_current()
-                .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
-
             // Parse query format: database/table/QUERY or just QUERY
             let (db_name, table_name, actual_query) = if query.contains('/') {
                 let parts: Vec<&str> = query.splitn(3, '/').collect();
                 if parts.len() == 3 {
-                    (Some(parts[0]), Some(parts[1]), parts[2])
+                    (Some(parts[0].to_string()), Some(parts[1].to_string()), parts[2].to_string())
                 } else {
-                    (None, None, query)
+                    (None, None, query.to_string())
                 }
             } else {
-                (None, None, query)
+                (None, None, query.to_string())
             };
 
-            let session_id = runtime.block_on(async move {
-                self.execute_query(actual_query, db_name, table_name).await
-            })?;
+            // Clone for the thread
+            let pool = self.pool.clone();
+            let sessions = self.sessions.clone();
+
+            let (session_id, db_name, table_name, query_str, result, row_count) = std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| AgfsError::internal(format!("failed to create runtime: {}", e)))?;
+                rt.block_on(async move {
+                    Self::execute_query_with_pool(&pool, &actual_query, db_name.as_deref(), table_name.as_deref()).await
+                })
+            })
+            .join()
+            .map_err(|_| AgfsError::internal("task join failed"))??;
+
+            // Create the session in the session manager
+            sessions.create_session(db_name, table_name, query_str, result, row_count);
 
             Ok(session_id.len() as i64)
         } else {
