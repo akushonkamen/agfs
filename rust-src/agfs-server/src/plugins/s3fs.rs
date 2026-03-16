@@ -232,7 +232,6 @@ impl S3FS {
 
         // Collect ByteStream into Vec<u8>
         use futures::StreamExt;
-
         let mut data = Vec::new();
         let mut body = output.body;
         while let Some(chunk_result) = body.next().await {
