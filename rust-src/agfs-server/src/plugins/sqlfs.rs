@@ -4,17 +4,33 @@
 
 use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData, WriteFlag};
 use chrono::Utc;
-use sqlx::{Row, SqlitePool};
+use sqlx::{MySqlPool, PgPool, Row, SqlitePool};
 use std::pin::Pin;
 use std::sync::Arc;
 
-/// SQL file system with SQLite backend
+/// Database type enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbType {
+    SQLite,
+    MySQL,
+    PostgreSQL,
+}
+
+/// Database pool enum that can hold any of the supported database pools
+#[derive(Clone)]
+pub enum DbPool {
+    SQLite(Arc<SqlitePool>),
+    MySQL(Arc<MySqlPool>),
+    PostgreSQL(Arc<PgPool>),
+}
+
+/// SQL file system with multi-database backend support
 ///
-/// For MySQL/PostgreSQL support, use database-specific connection pooling
-/// and execute SQL directly through those clients.
+/// Supports SQLite, MySQL, and PostgreSQL through connection pooling.
 #[derive(Debug, Clone)]
 pub struct SqlFS {
-    pool: Arc<SqlitePool>,
+    pool: DbPool,
+    db_type: DbType,
     table_prefix: String,
 }
 
@@ -23,28 +39,44 @@ impl SqlFS {
     ///
     /// Connection string format:
     /// - SQLite: `sqlite:path/to/database.db` or `sqlite::memory:`
+    /// - MySQL: `mysql://user:password@host/database`
+    /// - PostgreSQL: `postgresql://user:password@host/database` or `postgres://...`
     pub async fn new(connection_string: &str) -> Result<Self, AgfsError> {
         Self::with_table_prefix(connection_string, "agfs_files").await
     }
 
     /// Create a new SqlFS instance with custom table prefix
     pub async fn with_table_prefix(connection_string: &str, table_prefix: &str) -> Result<Self, AgfsError> {
-        // Convert to sqlite: format if needed
-        let conn_str = if connection_string.starts_with("sqlite:") {
-            connection_string.to_string()
-        } else if connection_string.contains(":memory:") {
-            format!("sqlite:{}", connection_string)
+        let (pool, db_type) = if connection_string.starts_with("postgres:") || connection_string.starts_with("postgresql:") {
+            // PostgreSQL connection
+            let pg_pool = PgPool::connect(connection_string)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to connect to PostgreSQL: {}", e)))?;
+            (DbPool::PostgreSQL(Arc::new(pg_pool)), DbType::PostgreSQL)
+        } else if connection_string.starts_with("mysql:") || connection_string.starts_with("mariadb:") {
+            // MySQL connection
+            let mysql_pool = MySqlPool::connect(connection_string)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to connect to MySQL: {}", e)))?;
+            (DbPool::MySQL(Arc::new(mysql_pool)), DbType::MySQL)
         } else {
-            format!("sqlite:{}", connection_string)
+            // SQLite connection (default)
+            let conn_str = if connection_string.starts_with("sqlite:") {
+                connection_string.to_string()
+            } else if connection_string.contains(":memory:") {
+                format!("sqlite:{}", connection_string)
+            } else {
+                format!("sqlite:{}", connection_string)
+            };
+            let sqlite_pool = SqlitePool::connect(&conn_str)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to connect to SQLite: {}", e)))?;
+            (DbPool::SQLite(Arc::new(sqlite_pool)), DbType::SQLite)
         };
 
-        // Create connection pool
-        let pool = SqlitePool::connect(&conn_str)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Failed to connect to database: {}", e)))?;
-
         let fs = Self {
-            pool: Arc::new(pool),
+            pool,
+            db_type,
             table_prefix: table_prefix.to_string(),
         };
 
@@ -52,6 +84,11 @@ impl SqlFS {
         fs.init_schema().await?;
 
         Ok(fs)
+    }
+
+    /// Get the database type
+    pub fn db_type(&self) -> DbType {
+        self.db_type
     }
 
     /// Get the files table name
@@ -69,33 +106,92 @@ impl SqlFS {
         let files_table = self.files_table();
         let dirs_table = self.dirs_table();
 
-        // Create files table
-        sqlx::query(&format!(
-            "CREATE TABLE IF NOT EXISTS {} (
-                path TEXT PRIMARY KEY,
-                data BLOB,
-                mode INTEGER,
-                mod_time TEXT,
-                size INTEGER
-            )",
-            files_table
-        ))
-        .execute(&*self.pool)
-        .await
-        .map_err(|e| AgfsError::internal(format!("Failed to create files table: {}", e)))?;
+        match &self.pool {
+            DbPool::PostgreSQL(pool) => {
+                // PostgreSQL syntax
+                sqlx::query(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} (
+                        path TEXT PRIMARY KEY,
+                        data BYTEA,
+                        mode BIGINT,
+                        mod_time TEXT,
+                        size BIGINT
+                    )",
+                    files_table
+                ))
+                .execute(&**pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to create files table: {}", e)))?;
 
-        // Create directories table
-        sqlx::query(&format!(
-            "CREATE TABLE IF NOT EXISTS {} (
-                path TEXT PRIMARY KEY,
-                mode INTEGER,
-                mod_time TEXT
-            )",
-            dirs_table
-        ))
-        .execute(&*self.pool)
-        .await
-        .map_err(|e| AgfsError::internal(format!("Failed to create dirs table: {}", e)))?;
+                sqlx::query(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} (
+                        path TEXT PRIMARY KEY,
+                        mode BIGINT,
+                        mod_time TEXT
+                    )",
+                    dirs_table
+                ))
+                .execute(&**pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to create dirs table: {}", e)))?;
+            }
+            DbPool::MySQL(pool) => {
+                // MySQL syntax
+                sqlx::query(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} (
+                        path VARCHAR(512) PRIMARY KEY,
+                        data LONGBLOB,
+                        mode BIGINT,
+                        mod_time VARCHAR(64),
+                        size BIGINT
+                    )",
+                    files_table
+                ))
+                .execute(&**pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to create files table: {}", e)))?;
+
+                sqlx::query(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} (
+                        path VARCHAR(512) PRIMARY KEY,
+                        mode BIGINT,
+                        mod_time VARCHAR(64)
+                    )",
+                    dirs_table
+                ))
+                .execute(&**pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to create dirs table: {}", e)))?;
+            }
+            DbPool::SQLite(pool) => {
+                // SQLite syntax
+                sqlx::query(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} (
+                        path TEXT PRIMARY KEY,
+                        data BLOB,
+                        mode INTEGER,
+                        mod_time TEXT,
+                        size INTEGER
+                    )",
+                    files_table
+                ))
+                .execute(&**pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to create files table: {}", e)))?;
+
+                sqlx::query(&format!(
+                    "CREATE TABLE IF NOT EXISTS {} (
+                        path TEXT PRIMARY KEY,
+                        mode INTEGER,
+                        mod_time TEXT
+                    )",
+                    dirs_table
+                ))
+                .execute(&**pool)
+                .await
+                .map_err(|e| AgfsError::internal(format!("Failed to create dirs table: {}", e)))?;
+            }
+        }
 
         Ok(())
     }
@@ -125,10 +221,11 @@ impl SqlFS {
     /// Helper to run async code in sync context without runtime nesting
     fn run_in_blocking<F, R>(&self, f: F) -> Result<R, AgfsError>
     where
-        F: FnOnce(Arc<SqlitePool>) -> Pin<Box<dyn futures::Future<Output = Result<R, AgfsError>> + Send>> + Send + 'static,
+        F: FnOnce(DbPool, String) -> Pin<Box<dyn futures::Future<Output = Result<R, AgfsError>> + Send>> + Send + 'static,
         R: Send + 'static,
     {
         let pool = self.pool.clone();
+        let table_prefix = self.table_prefix.clone();
 
         // Use std::thread::spawn instead of tokio::task::spawn_blocking
         // since we need to block on the result and we can't await
@@ -138,7 +235,7 @@ impl SqlFS {
                 .enable_all()
                 .build()
                 .map_err(|e| AgfsError::internal(format!("failed to create runtime: {}", e)))?;
-            rt.block_on(f(pool))
+            rt.block_on(f(pool, table_prefix))
         });
 
         handle.join().map_err(|e| AgfsError::internal(format!("thread join failed: {:?}", e)))?
@@ -148,35 +245,93 @@ impl SqlFS {
 impl FileSystem for SqlFS {
     fn create(&self, path: &str) -> Result<(), AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
-            // Check if file exists
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
-            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {} WHERE path = $1", files_table))
-                .bind(&path)
-                .fetch_one(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
 
-            if count > 0 {
-                return Err(AgfsError::already_exists(&path));
+            match &pool {
+                DbPool::PostgreSQL(p) => {
+                    // Check if file exists
+                    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {} WHERE path = $1", files_table))
+                        .bind(&path)
+                        .fetch_one(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+                    if count > 0 {
+                        return Err(AgfsError::already_exists(&path));
+                    }
+
+                    let now = Utc::now().to_rfc3339();
+
+                    sqlx::query(&format!(
+                        "INSERT INTO {} (path, data, mode, mod_time, size) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (path) DO NOTHING",
+                        files_table
+                    ))
+                    .bind(&path)
+                    .bind(Vec::<u8>::new())
+                    .bind(0i64)
+                    .bind(&now)
+                    .bind(0i64)
+                    .execute(&**p)
+                    .await
+                    .map_err(|e| AgfsError::internal(format!("Insert failed: {}", e)))?;
+                }
+                DbPool::MySQL(p) => {
+                    // Check if file exists
+                    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {} WHERE path = ?", files_table))
+                        .bind(&path)
+                        .fetch_one(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+                    if count > 0 {
+                        return Err(AgfsError::already_exists(&path));
+                    }
+
+                    let now = Utc::now().to_rfc3339();
+
+                    sqlx::query(&format!(
+                        "INSERT INTO {} (path, data, mode, mod_time, size) VALUES (?, ?, ?, ?, ?)",
+                        files_table
+                    ))
+                    .bind(&path)
+                    .bind(Vec::<u8>::new())
+                    .bind(0i64)
+                    .bind(&now)
+                    .bind(0i64)
+                    .execute(&**p)
+                    .await
+                    .map_err(|e| AgfsError::internal(format!("Insert failed: {}", e)))?;
+                }
+                DbPool::SQLite(p) => {
+                    // Check if file exists
+                    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {} WHERE path = $1", files_table))
+                        .bind(&path)
+                        .fetch_one(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+                    if count > 0 {
+                        return Err(AgfsError::already_exists(&path));
+                    }
+
+                    let now = Utc::now().to_rfc3339();
+
+                    sqlx::query(&format!(
+                        "INSERT INTO {} (path, data, mode, mod_time, size) VALUES ($1, $2, $3, $4, $5)",
+                        files_table
+                    ))
+                    .bind(&path)
+                    .bind(Vec::<u8>::new())
+                    .bind(0i64)
+                    .bind(&now)
+                    .bind(0i64)
+                    .execute(&**p)
+                    .await
+                    .map_err(|e| AgfsError::internal(format!("Insert failed: {}", e)))?;
+                }
             }
-
-            let now = Utc::now().to_rfc3339();
-
-            sqlx::query(&format!(
-                "INSERT INTO {} (path, data, mode, mod_time, size) VALUES ($1, $2, $3, $4, $5)",
-                files_table
-            ))
-            .bind(&path)
-            .bind(Vec::<u8>::new())
-            .bind(0i64)  // mode as i64 for compatibility
-            .bind(&now)
-            .bind(0i64)
-            .execute(&*pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Insert failed: {}", e)))?;
 
             Ok(())
         }))
@@ -184,23 +339,50 @@ impl FileSystem for SqlFS {
 
     fn mkdir(&self, path: &str, perm: u32) -> Result<(), AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
         let perm = perm as i64;
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let dirs_table = format!("{}_dirs", table_prefix);
             let now = Utc::now().to_rfc3339();
 
-            sqlx::query(&format!(
-                "INSERT INTO {} (path, mode, mod_time) VALUES ($1, $2, $3) ON CONFLICT (path) DO NOTHING",
-                dirs_table
-            ))
-            .bind(&path)
-            .bind(perm)
-            .bind(&now)
-            .execute(&*pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Insert dir failed: {}", e)))?;
+            match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!(
+                        "INSERT INTO {} (path, mode, mod_time) VALUES ($1, $2, $3) ON CONFLICT (path) DO NOTHING",
+                        dirs_table
+                    ))
+                    .bind(&path)
+                    .bind(perm)
+                    .bind(&now)
+                    .execute(&**p)
+                    .await
+                    .map_err(|e| AgfsError::internal(format!("Insert dir failed: {}", e)))?;
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!(
+                        "INSERT IGNORE INTO {} (path, mode, mod_time) VALUES (?, ?, ?)",
+                        dirs_table
+                    ))
+                    .bind(&path)
+                    .bind(perm)
+                    .bind(&now)
+                    .execute(&**p)
+                    .await
+                    .map_err(|e| AgfsError::internal(format!("Insert dir failed: {}", e)))?;
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!(
+                        "INSERT INTO {} (path, mode, mod_time) VALUES ($1, $2, $3) ON CONFLICT (path) DO NOTHING",
+                        dirs_table
+                    ))
+                    .bind(&path)
+                    .bind(perm)
+                    .bind(&now)
+                    .execute(&**p)
+                    .await
+                    .map_err(|e| AgfsError::internal(format!("Insert dir failed: {}", e)))?;
+                }
+            }
 
             Ok(())
         }))
@@ -208,15 +390,32 @@ impl FileSystem for SqlFS {
 
     fn remove(&self, path: &str) -> Result<(), AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
-            // Try to remove as file first
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
-            let result = sqlx::query(&format!("DELETE FROM {} WHERE path = $1", files_table))
-                .bind(&path)
-                .execute(&*pool)
-                .await;
+            let dirs_table = format!("{}_dirs", table_prefix);
+
+            // Try to remove as file first
+            let result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path = $1", files_table))
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path = ?", files_table))
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path = $1", files_table))
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+            };
 
             if let Ok(rows) = result {
                 if rows.rows_affected() > 0 {
@@ -225,12 +424,28 @@ impl FileSystem for SqlFS {
             }
 
             // Try to remove as directory
-            let dirs_table = format!("{}_dirs", table_prefix);
-            let result = sqlx::query(&format!("DELETE FROM {} WHERE path = $1", dirs_table))
-                .bind(&path)
-                .execute(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Delete dir failed: {}", e)))?;
+            let result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path = $1", dirs_table))
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path = ?", dirs_table))
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path = $1", dirs_table))
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+            };
+
+            let result = result.map_err(|e| AgfsError::internal(format!("Delete dir failed: {}", e)))?;
 
             if result.rows_affected() > 0 {
                 Ok(())
@@ -242,26 +457,56 @@ impl FileSystem for SqlFS {
 
     fn remove_all(&self, path: &str) -> Result<(), AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
             let dirs_table = format!("{}_dirs", table_prefix);
 
-            // Use GLOB pattern matching for SQLite
-            let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
+            // Use LIKE pattern matching for MySQL/PostgreSQL, GLOB for SQLite
+            let pattern = format!("{}%", path.trim_end_matches('/'));
 
-            sqlx::query(&format!("DELETE FROM {} WHERE path GLOB $1", files_table))
-                .bind(&glob_pattern)
-                .execute(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Delete files failed: {}", e)))?;
+            match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path LIKE $1", files_table))
+                        .bind(&pattern)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Delete files failed: {}", e)))?;
 
-            sqlx::query(&format!("DELETE FROM {} WHERE path GLOB $1", dirs_table))
-                .bind(&glob_pattern)
-                .execute(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Delete dirs failed: {}", e)))?;
+                    sqlx::query(&format!("DELETE FROM {} WHERE path LIKE $1", dirs_table))
+                        .bind(&pattern)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Delete dirs failed: {}", e)))?;
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("DELETE FROM {} WHERE path LIKE ?", files_table))
+                        .bind(&pattern)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Delete files failed: {}", e)))?;
+
+                    sqlx::query(&format!("DELETE FROM {} WHERE path LIKE ?", dirs_table))
+                        .bind(&pattern)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Delete dirs failed: {}", e)))?;
+                }
+                DbPool::SQLite(p) => {
+                    let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
+                    sqlx::query(&format!("DELETE FROM {} WHERE path GLOB $1", files_table))
+                        .bind(&glob_pattern)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Delete files failed: {}", e)))?;
+
+                    sqlx::query(&format!("DELETE FROM {} WHERE path GLOB $1", dirs_table))
+                        .bind(&glob_pattern)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Delete dirs failed: {}", e)))?;
+                }
+            }
 
             Ok(())
         }))
@@ -269,35 +514,68 @@ impl FileSystem for SqlFS {
 
     fn read(&self, path: &str, offset: i64, size: i64) -> Result<Vec<u8>, AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
 
             let data: Vec<u8> = if size < 0 && offset <= 0 {
                 // Read entire file
-                sqlx::query_scalar(&format!(
-                    "SELECT data FROM {} WHERE path = $1",
-                    files_table
-                ))
-                .bind(&path)
-                .fetch_one(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                match &pool {
+                    DbPool::PostgreSQL(p) => {
+                        sqlx::query_scalar(&format!("SELECT data FROM {} WHERE path = $1", files_table))
+                            .bind(&path)
+                            .fetch_one(&**p)
+                            .await
+                            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                    }
+                    DbPool::MySQL(p) => {
+                        sqlx::query_scalar(&format!("SELECT data FROM {} WHERE path = ?", files_table))
+                            .bind(&path)
+                            .fetch_one(&**p)
+                            .await
+                            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                    }
+                    DbPool::SQLite(p) => {
+                        sqlx::query_scalar(&format!("SELECT data FROM {} WHERE path = $1", files_table))
+                            .bind(&path)
+                            .fetch_one(&**p)
+                            .await
+                            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                    }
+                }
             } else {
-                // Use SUBSTR for partial reads
-                // SUBSTR is 1-indexed, so add 1 to offset
+                // Use SUBSTR for partial reads (works across all DBs)
                 let substr_offset = offset.max(0) + 1;
-                sqlx::query_scalar(&format!(
-                    "SELECT SUBSTR(data, $2, $3) FROM {} WHERE path = $1",
-                    files_table
-                ))
-                .bind(&path)
-                .bind(substr_offset)
-                .bind(size)
-                .fetch_one(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                let substr_len = if size < 0 { 1000000000 } else { size };
+                match &pool {
+                    DbPool::PostgreSQL(p) => {
+                        sqlx::query_scalar(&format!("SELECT SUBSTRING(data, $2, $3) FROM {} WHERE path = $1", files_table))
+                            .bind(&path)
+                            .bind(substr_offset)
+                            .bind(substr_len)
+                            .fetch_one(&**p)
+                            .await
+                            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                    }
+                    DbPool::MySQL(p) => {
+                        sqlx::query_scalar(&format!("SELECT SUBSTRING(data, ?, ?) FROM {} WHERE path = ?", files_table))
+                            .bind(&path)
+                            .bind(substr_offset)
+                            .bind(substr_len)
+                            .fetch_one(&**p)
+                            .await
+                            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                    }
+                    DbPool::SQLite(p) => {
+                        sqlx::query_scalar(&format!("SELECT SUBSTR(data, $2, $3) FROM {} WHERE path = $1", files_table))
+                            .bind(&path)
+                            .bind(substr_offset)
+                            .bind(substr_len)
+                            .fetch_one(&**p)
+                            .await
+                            .map_err(|e| AgfsError::internal(format!("Read failed: {}", e)))?
+                    }
+                }
             };
 
             Ok(data)
@@ -306,26 +584,48 @@ impl FileSystem for SqlFS {
 
     fn write(&self, path: &str, data: &[u8], _offset: i64, _flags: WriteFlag) -> Result<i64, AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
         let data = data.to_vec();
         let now = Utc::now().to_rfc3339();
         let len = data.len() as i64;
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
 
-            let rows_affected = sqlx::query(&format!(
-                "UPDATE {} SET data = $1, mod_time = $2, size = $3 WHERE path = $4",
-                files_table
-            ))
-            .bind(&data)
-            .bind(&now)
-            .bind(len)
-            .bind(&path)
-            .execute(&*pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Update failed: {}", e)))?
-            .rows_affected();
+            let rows_affected = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET data = $1, mod_time = $2, size = $3 WHERE path = $4", files_table))
+                        .bind(&data)
+                        .bind(&now)
+                        .bind(len)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Update failed: {}", e)))?
+                        .rows_affected()
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET data = ?, mod_time = ?, size = ? WHERE path = ?", files_table))
+                        .bind(&data)
+                        .bind(&now)
+                        .bind(len)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Update failed: {}", e)))?
+                        .rows_affected()
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("UPDATE {} SET data = $1, mod_time = $2, size = $3 WHERE path = $4", files_table))
+                        .bind(&data)
+                        .bind(&now)
+                        .bind(len)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                        .map_err(|e| AgfsError::internal(format!("Update failed: {}", e)))?
+                        .rows_affected()
+                }
+            };
 
             if rows_affected == 0 {
                 return Err(AgfsError::not_found(&path));
@@ -337,23 +637,56 @@ impl FileSystem for SqlFS {
 
     fn read_dir(&self, path: &str) -> Result<Vec<FileInfo>, AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
             let dirs_table = format!("{}_dirs", table_prefix);
             let mut files = Vec::new();
 
+            // Build query based on database type
+            let (file_query, dir_query) = match &pool {
+                DbPool::PostgreSQL(_) | DbPool::MySQL(_) => {
+                    // Use LIKE with wildcard
+                    let pattern = format!("{}/%", path.trim_end_matches('/'));
+                    let fq = format!("SELECT path, mode, mod_time, size FROM {} WHERE path LIKE $1", files_table);
+                    let dq = format!("SELECT path, mode, mod_time FROM {} WHERE path LIKE $1", dirs_table);
+                    (fq, dq)
+                }
+                DbPool::SQLite(_) => {
+                    // Use GLOB
+                    let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
+                    let fq = format!("SELECT path, mode, mod_time, size FROM {} WHERE path GLOB $1", files_table);
+                    let dq = format!("SELECT path, mode, mod_time FROM {} WHERE path GLOB $1", dirs_table);
+                    (fq, dq)
+                }
+            };
+
+            let pattern = match &pool {
+                DbPool::PostgreSQL(_) | DbPool::MySQL(_) => format!("{}/%", path.trim_end_matches('/')),
+                DbPool::SQLite(_) => format!("{}/*", path.trim_end_matches('/')),
+            };
+
             // Query files in this directory
-            let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
-            let file_rows = sqlx::query(&format!(
-                "SELECT path, mode, mod_time, size FROM {} WHERE path GLOB $1",
-                files_table
-            ))
-            .bind(&glob_pattern)
-            .fetch_all(&*pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+            macro_rules! query_files {
+                ($pool:expr, $query:expr, $pattern:expr) => {{
+                    sqlx::query(&$query)
+                        .bind(&$pattern)
+                        .fetch_all($pool)
+                        .await
+                }}
+            }
+
+            let file_rows = match &pool {
+                DbPool::PostgreSQL(p) => query_files!(&***p, file_query, pattern).await,
+                DbPool::MySQL(p) => {
+                    // MySQL uses ? placeholder
+                    let mq = format!("SELECT path, mode, mod_time, size FROM {} WHERE path LIKE ?", files_table);
+                    sqlx::query(&mq).bind(&pattern).fetch_all(&**p).await
+                }
+                DbPool::SQLite(p) => query_files!(&***p, file_query, pattern).await,
+            };
+
+            let file_rows = file_rows.map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
 
             for row in file_rows {
                 let full_path: String = row.get("path");
@@ -378,21 +711,25 @@ impl FileSystem for SqlFS {
             }
 
             // Query directories in this directory
-            let glob_pattern = format!("{}/*", path.trim_end_matches('/'));
-            let dir_rows = sqlx::query(&format!(
-                "SELECT path, mode, mod_time FROM {} WHERE path GLOB $1",
-                dirs_table
-            ))
-            .bind(&glob_pattern)
-            .fetch_all(&*pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+            let dir_rows = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&dir_query).bind(&pattern).fetch_all(&**p).await
+                }
+                DbPool::MySQL(p) => {
+                    let mq = format!("SELECT path, mode, mod_time FROM {} WHERE path LIKE ?", dirs_table);
+                    sqlx::query(&mq).bind(&pattern).fetch_all(&**p).await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&dir_query).bind(&pattern).fetch_all(&**p).await
+                }
+            };
+
+            let dir_rows = dir_rows.map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
 
             for row in dir_rows {
                 let full_path: String = row.get("path");
                 let name = full_path.trim_start_matches(&path).trim_start_matches('/').to_string();
 
-                // Skip if contains another /
                 if name.contains('/') {
                     continue;
                 }
@@ -416,9 +753,8 @@ impl FileSystem for SqlFS {
 
     fn stat(&self, path: &str) -> Result<FileInfo, AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             if path == "/" || path.is_empty() {
                 return Ok(FileInfo {
                     name: String::new(),
@@ -431,16 +767,32 @@ impl FileSystem for SqlFS {
                 });
             }
 
-            // Try as file first
             let files_table = format!("{}_files", table_prefix);
-            if let Ok(row) = sqlx::query(&format!(
-                "SELECT path, mode, mod_time, size FROM {} WHERE path = $1",
-                files_table
-            ))
-            .bind(&path)
-            .fetch_one(&*pool)
-            .await
-            {
+            let dirs_table = format!("{}_dirs", table_prefix);
+
+            // Try as file first
+            let file_result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("SELECT path, mode, mod_time, size FROM {} WHERE path = $1", files_table))
+                        .bind(&path)
+                        .fetch_optional(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("SELECT path, mode, mod_time, size FROM {} WHERE path = ?", files_table))
+                        .bind(&path)
+                        .fetch_optional(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("SELECT path, mode, mod_time, size FROM {} WHERE path = $1", files_table))
+                        .bind(&path)
+                        .fetch_optional(&**p)
+                        .await
+                }
+            };
+
+            if let Ok(Some(row)) = file_result {
                 return Ok(FileInfo {
                     name: path.trim_start_matches('/').to_string(),
                     size: row.get("size"),
@@ -455,15 +807,28 @@ impl FileSystem for SqlFS {
             }
 
             // Try as directory
-            let dirs_table = format!("{}_dirs", table_prefix);
-            if let Ok(row) = sqlx::query(&format!(
-                "SELECT path, mode, mod_time FROM {} WHERE path = $1",
-                dirs_table
-            ))
-            .bind(&path)
-            .fetch_one(&*pool)
-            .await
-            {
+            let dir_result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("SELECT path, mode, mod_time FROM {} WHERE path = $1", dirs_table))
+                        .bind(&path)
+                        .fetch_optional(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("SELECT path, mode, mod_time FROM {} WHERE path = ?", dirs_table))
+                        .bind(&path)
+                        .fetch_optional(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("SELECT path, mode, mod_time FROM {} WHERE path = $1", dirs_table))
+                        .bind(&path)
+                        .fetch_optional(&**p)
+                        .await
+                }
+            };
+
+            if let Ok(Some(row)) = dir_result {
                 return Ok(FileInfo {
                     name: path.trim_start_matches('/').to_string(),
                     size: 0,
@@ -484,21 +849,35 @@ impl FileSystem for SqlFS {
     fn rename(&self, old_path: &str, new_path: &str) -> Result<(), AgfsError> {
         let old_path = old_path.to_string();
         let new_path = new_path.to_string();
-        let table_prefix = self.table_prefix.clone();
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
             let dirs_table = format!("{}_dirs", table_prefix);
 
             // Try file rename first
-            let result = sqlx::query(&format!(
-                "UPDATE {} SET path = $1 WHERE path = $2",
-                files_table
-            ))
-            .bind(&new_path)
-            .bind(&old_path)
-            .execute(&*pool)
-            .await;
+            let result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET path = $1 WHERE path = $2", files_table))
+                        .bind(&new_path)
+                        .bind(&old_path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET path = ? WHERE path = ?", files_table))
+                        .bind(&new_path)
+                        .bind(&old_path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("UPDATE {} SET path = $1 WHERE path = $2", files_table))
+                        .bind(&new_path)
+                        .bind(&old_path)
+                        .execute(&**p)
+                        .await
+                }
+            };
 
             if let Ok(rows) = result {
                 if rows.rows_affected() > 0 {
@@ -507,15 +886,31 @@ impl FileSystem for SqlFS {
             }
 
             // Try directory rename
-            let result = sqlx::query(&format!(
-                "UPDATE {} SET path = $1 WHERE path = $2",
-                dirs_table
-            ))
-            .bind(&new_path)
-            .bind(&old_path)
-            .execute(&*pool)
-            .await
-            .map_err(|e| AgfsError::internal(format!("Rename dir failed: {}", e)))?;
+            let result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET path = $1 WHERE path = $2", dirs_table))
+                        .bind(&new_path)
+                        .bind(&old_path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET path = ? WHERE path = ?", dirs_table))
+                        .bind(&new_path)
+                        .bind(&old_path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("UPDATE {} SET path = $1 WHERE path = $2", dirs_table))
+                        .bind(&new_path)
+                        .bind(&old_path)
+                        .execute(&**p)
+                        .await
+                }
+            };
+
+            let result = result.map_err(|e| AgfsError::internal(format!("Rename dir failed: {}", e)))?;
 
             if result.rows_affected() > 0 {
                 Ok(())
@@ -527,19 +922,36 @@ impl FileSystem for SqlFS {
 
     fn chmod(&self, path: &str, mode: u32) -> Result<(), AgfsError> {
         let path = path.to_string();
-        let table_prefix = self.table_prefix.clone();
         let mode = mode as i64;
 
-        self.run_in_blocking(move |pool| Box::pin(async move {
+        self.run_in_blocking(move |pool, table_prefix| Box::pin(async move {
             let files_table = format!("{}_files", table_prefix);
             let dirs_table = format!("{}_dirs", table_prefix);
 
             // Try file chmod first
-            let result = sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", files_table))
-                .bind(mode)
-                .bind(&path)
-                .execute(&*pool)
-                .await;
+            let result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", files_table))
+                        .bind(mode)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET mode = ? WHERE path = ?", files_table))
+                        .bind(mode)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", files_table))
+                        .bind(mode)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+            };
 
             if let Ok(rows) = result {
                 if rows.rows_affected() > 0 {
@@ -548,12 +960,31 @@ impl FileSystem for SqlFS {
             }
 
             // Try directory chmod
-            let result = sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", dirs_table))
-                .bind(mode)
-                .bind(&path)
-                .execute(&*pool)
-                .await
-                .map_err(|e| AgfsError::internal(format!("Chmod failed: {}", e)))?;
+            let result = match &pool {
+                DbPool::PostgreSQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", dirs_table))
+                        .bind(mode)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::MySQL(p) => {
+                    sqlx::query(&format!("UPDATE {} SET mode = ? WHERE path = ?", dirs_table))
+                        .bind(mode)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+                DbPool::SQLite(p) => {
+                    sqlx::query(&format!("UPDATE {} SET mode = $1 WHERE path = $2", dirs_table))
+                        .bind(mode)
+                        .bind(&path)
+                        .execute(&**p)
+                        .await
+                }
+            };
+
+            let result = result.map_err(|e| AgfsError::internal(format!("Chmod failed: {}", e)))?;
 
             if result.rows_affected() > 0 {
                 Ok(())

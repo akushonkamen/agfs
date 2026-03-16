@@ -3,7 +3,7 @@
 //! This is the main entry point for the AGFS file system server.
 //! It loads configuration, initializes plugins, and starts the HTTP server.
 
-use agfs_server::{config::Config, mountablefs::MountableFS, plugins::{create_empty_plugin, memfs::create_memfs_plugin, localfs::create_localfs_plugin}, router};
+use agfs_server::{config::Config, mountablefs::MountableFS, plugins::{create_empty_plugin, create_memfs_plugin, create_localfs_plugin, create_queuefs_plugin}, router};
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
@@ -114,7 +114,7 @@ fn register_builtin_plugins(mfs: &Arc<MountableFS>) {
 
     // TODO: Register more plugins as they are implemented
     // mfs.register_plugin_factory("kvfs", kvfs::create_kvfs_plugin);
-    // mfs.register_plugin_factory("queuefs", queuefs::create_queuefs_plugin);
+    mfs.register_plugin_factory("queuefs", create_queuefs_plugin);
     // mfs.register_plugin_factory("serverinfofs", serverinfofs::create_serverinfofs_plugin);
     // etc.
 }

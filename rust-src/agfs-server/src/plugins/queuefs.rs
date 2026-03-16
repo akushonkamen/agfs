@@ -264,6 +264,62 @@ impl FileSystem for QueueFS {
     }
 }
 
+/// QueueFS plugin wrapper
+pub struct QueueFSPlugin {
+    fs: QueueFS,
+}
+
+impl QueueFSPlugin {
+    pub fn new() -> Self {
+        Self { fs: QueueFS::new() }
+    }
+}
+
+impl Default for QueueFSPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+use agfs_sdk::{types::ConfigParameter, ServicePlugin};
+use std::collections::HashMap;
+
+impl ServicePlugin for QueueFSPlugin {
+    fn name(&self) -> &str {
+        "queuefs"
+    }
+
+    fn validate(&self, _config: &HashMap<String, serde_json::Value>) -> Result<(), AgfsError> {
+        Ok(())
+    }
+
+    fn initialize(&mut self, _config: HashMap<String, serde_json::Value>) -> Result<(), AgfsError> {
+        Ok(())
+    }
+
+    fn get_filesystem(&self) -> &dyn FileSystem {
+        &self.fs
+    }
+
+    fn get_readme(&self) -> &str {
+        "QueueFS - Message queue file system with in-memory storage"
+    }
+
+    fn get_config_params(&self) -> Vec<ConfigParameter> {
+        vec![]
+    }
+
+    fn shutdown(&mut self) -> Result<(), AgfsError> {
+        self.fs.queues.clear();
+        Ok(())
+    }
+}
+
+/// Factory function for creating queuefs plugin instances
+pub fn create_queuefs_plugin() -> Box<dyn ServicePlugin> {
+    Box::new(QueueFSPlugin::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
