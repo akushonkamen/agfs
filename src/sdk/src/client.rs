@@ -124,7 +124,7 @@ impl Client {
     pub async fn create(&self, path: &str) -> Result<(), AgfsError> {
         let url = format!("{}/files?path={}", self.base_url, encode_path(path));
         let response = self.http_client.post(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Read file content
@@ -197,14 +197,14 @@ impl Client {
     /// - `recursive`: If true, removes non-empty directories recursively
     pub async fn remove(&self, path: &str, recursive: bool) -> Result<(), AgfsError> {
         let url = format!(
-            "{}/files?path={}&recursive={}",
+            "{}/files/delete?path={}&recursive={}",
             self.base_url,
             encode_path(path),
             recursive
         );
 
-        let response = self.http_client.delete(&url).send().await?;
-        self.handle_response(response).await
+        let response = self.http_client.post(&url).send().await?;
+        self.handle_empty_response(response).await
     }
 
     /// Remove a single file or empty directory
@@ -233,7 +233,7 @@ impl Client {
         );
 
         let response = self.http_client.post(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// List directory contents
@@ -275,7 +275,7 @@ impl Client {
             .send()
             .await?;
 
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Change file permissions
@@ -294,7 +294,7 @@ impl Client {
             .send()
             .await?;
 
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Update file modification time
@@ -303,7 +303,7 @@ impl Client {
     pub async fn touch(&self, path: &str) -> Result<(), AgfsError> {
         let url = format!("{}/touch?path={}", self.base_url, encode_path(path));
         let response = self.http_client.post(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Truncate a file
@@ -318,7 +318,7 @@ impl Client {
         );
 
         let response = self.http_client.post(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Create a symbolic link
@@ -339,7 +339,7 @@ impl Client {
             .send()
             .await?;
 
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Read symbolic link target
@@ -445,7 +445,7 @@ impl Client {
     pub async fn close_handle(&self, handle_id: i64) -> Result<(), AgfsError> {
         let url = format!("{}/handles/{}", self.base_url, handle_id);
         let response = self.http_client.delete(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Read from a file handle
@@ -529,7 +529,7 @@ impl Client {
     pub async fn sync_handle(&self, handle_id: i64) -> Result<(), AgfsError> {
         let url = format!("{}/handles/{}/sync", self.base_url, handle_id);
         let response = self.http_client.post(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     /// Get file info via handle
@@ -618,7 +618,7 @@ impl Client {
     pub async fn delete_plugin(&self, path: &str) -> Result<(), AgfsError> {
         let url = format!("{}/plugins?path={}", self.base_url, encode_path(path));
         let response = self.http_client.delete(&url).send().await?;
-        self.handle_response(response).await
+        self.handle_empty_response(response).await
     }
 
     // --- Helper methods ---
@@ -659,6 +659,34 @@ impl Client {
 
         if status.is_success() {
             Ok(response.bytes().await?.to_vec())
+        } else if status.as_u16() == 501 {
+            Err(AgfsError::NotSupported)
+        } else {
+            let bytes = response.bytes().await?;
+            if let Ok(err_resp) = serde_json::from_slice::<ErrorResponse>(&bytes) {
+                Err(AgfsError::Internal(format!(
+                    "HTTP {}: {}",
+                    status.as_u16(),
+                    err_resp.error
+                )))
+            } else {
+                Err(AgfsError::Internal(format!(
+                    "HTTP {}: {}",
+                    status.as_u16(),
+                    String::from_utf8_lossy(&bytes)
+                )))
+            }
+        }
+    }
+
+    /// Handle an HTTP response that should have an empty body on success
+    async fn handle_empty_response(&self, response: Response) -> Result<(), AgfsError> {
+        let status = response.status();
+
+        if status.is_success() {
+            // Consume and ignore the response body
+            let _ = response.bytes().await;
+            Ok(())
         } else if status.as_u16() == 501 {
             Err(AgfsError::NotSupported)
         } else {

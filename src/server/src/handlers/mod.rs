@@ -59,6 +59,7 @@ pub fn file_info_response(info: ctxfs_sdk::FileInfo) -> serde_json::Value {
         "mode": info.mode,
         "modTime": info.mod_time.to_rfc3339(),
         "isDir": info.is_dir,
+        "isSymlink": info.is_symlink,
         "meta": info.meta,
     })
 }

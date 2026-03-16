@@ -43,6 +43,7 @@ pub async fn list_directory(
                 mode: info.mode,
                 mod_time: info.mod_time.to_rfc3339(),
                 is_dir: info.is_dir,
+                is_symlink: info.is_symlink,
                 meta: if info.meta.content.is_empty() {
                     None
                 } else {
