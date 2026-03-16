@@ -1,74 +1,344 @@
 //! SqlFS2 - Improved SQL File System
 //!
-//! Plan 9 style interface with session management.
+//! Plan 9 style interface with session management and real SQL queries.
+//! Uses SQLite as the default backend.
 
 use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData, WriteFlag};
 use chrono::Utc;
 use dashmap::DashMap;
+use serde_json::{json, Value};
+use sqlx::{Column, Row, SqlitePool};
 use std::sync::Arc;
+use std::time::Duration;
 
-/// Query session
+/// Query session with real SQL execution
 #[derive(Debug, Clone)]
 struct Session {
-    #[allow(dead_code)]
     id: String,
-    #[allow(dead_code)]
+    db_name: String,
+    table_name: String,
     query: String,
-    result: Vec<Vec<String>>,
-    #[allow(dead_code)]
+    result: Value,
+    row_count: i64,
+    last_error: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
+    last_access: chrono::DateTime<chrono::Utc>,
 }
 
-/// SQL FS 2 with Plan 9 style interface
-#[derive(Debug, Clone)]
-pub struct SqlFS2 {
-    sessions: Arc<DashMap<String, Session>>,
-    session_counter: Arc<std::sync::atomic::AtomicU64>,
+impl Session {
+    /// Update last access time
+    fn touch(&mut self) {
+        self.last_access = Utc::now();
+    }
+
+    /// Check if session is expired
+    fn is_expired(&self, timeout: Duration) -> bool {
+        Utc::now().signed_duration_since(self.last_access).num_seconds() > timeout.as_secs() as i64
+    }
 }
 
-impl SqlFS2 {
-    /// Create a new SqlFS2 instance
-    pub fn new() -> Self {
-        Self {
-            sessions: Arc::new(DashMap::new()),
-            session_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
-        }
+/// Session manager with timeout cleanup
+#[derive(Debug)]
+struct SessionManager {
+    sessions: DashMap<String, Session>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    timeout: Duration,
+    cleanup_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SessionManager {
+    /// Create a new session manager
+    fn new(timeout: Duration) -> Self {
+        let mut manager = Self {
+            sessions: DashMap::new(),
+            next_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            timeout,
+            cleanup_handle: None,
+        };
+        manager.start_cleanup_task();
+        manager
+    }
+
+    /// Start background cleanup task
+    fn start_cleanup_task(&mut self) {
+        let sessions = self.sessions.clone();
+        let timeout = self.timeout;
+
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(timeout / 2);
+            loop {
+                interval.tick().await;
+                let _now = Utc::now();
+                sessions.retain(|_, session| {
+                    !session.is_expired(timeout)
+                });
+            }
+        });
+
+        self.cleanup_handle = Some(handle);
     }
 
     /// Generate new session ID
-    fn generate_session_id(&self) -> String {
-        format!("{}", self.session_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    fn generate_id(&self) -> String {
+        format!("{}", self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
     }
 
-    /// Execute a query
-    pub fn execute_query(&self, query: &str) -> Result<Vec<Vec<String>>, AgfsError> {
-        let session_id = self.generate_session_id();
+    /// Create a new session
+    fn create_session(&self, db_name: String, table_name: String, query: String, result: Value, row_count: i64) -> String {
+        let id = self.generate_id();
+        let now = Utc::now();
 
-        // In full implementation, would execute SQL query here
-        // For now, return placeholder result
-        let result = vec![vec!["id".to_string(), "value".to_string()]];
+        let session = Session {
+            id: id.clone(),
+            db_name,
+            table_name,
+            query,
+            result,
+            row_count,
+            last_error: None,
+            created_at: now,
+            last_access: now,
+        };
 
-        self.sessions.insert(session_id.clone(), Session {
-            id: session_id.clone(),
-            query: query.to_string(),
-            result: result.clone(),
-            created_at: Utc::now(),
+        self.sessions.insert(id.clone(), session);
+        id
+    }
+
+    /// Get a session and update last access
+    fn get_session(&self, id: &str) -> Option<Session> {
+        let mut session = self.sessions.get(id)?.clone();
+        session.touch();
+        Some(session)
+    }
+
+    /// Remove a session
+    fn remove_session(&self, id: &str) -> bool {
+        self.sessions.remove(id).is_some()
+    }
+
+    /// List all session IDs
+    fn list_sessions(&self) -> Vec<String> {
+        self.sessions.iter().map(|e| e.key().clone()).collect()
+    }
+}
+
+impl Drop for SessionManager {
+    fn drop(&mut self) {
+        if let Some(handle) = self.cleanup_handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+/// SQL FS 2 with Plan 9 style interface and real database backend
+#[derive(Debug, Clone)]
+pub struct SqlFS2 {
+    pool: Arc<SqlitePool>,
+    default_database: String,
+    default_table: String,
+    sessions: Arc<SessionManager>,
+    session_timeout: Duration,
+}
+
+impl SqlFS2 {
+    /// Create a new SqlFS2 instance from connection string
+    ///
+    /// Connection string format:
+    /// - SQLite: `sqlite:path/to/database.db` or `sqlite::memory:`
+    pub async fn new(connection_string: &str) -> Result<Self, AgfsError> {
+        Self::with_timeout(connection_string, Duration::from_secs(300)).await
+    }
+
+    /// Create a new SqlFS2 instance with custom session timeout
+    pub async fn with_timeout(connection_string: &str, timeout: Duration) -> Result<Self, AgfsError> {
+        // Convert to sqlite: format if needed
+        let conn_str = if connection_string.starts_with("sqlite:") {
+            connection_string.to_string()
+        } else if connection_string.contains(":memory:") {
+            format!("sqlite:{}", connection_string)
+        } else {
+            format!("sqlite:{}", connection_string)
+        };
+
+        // Create connection pool
+        let pool = SqlitePool::connect(&conn_str)
+            .await
+            .map_err(|e| AgfsError::internal(format!("Failed to connect to database: {}", e)))?;
+
+        // Extract database name from connection string
+        let default_database = extract_database_name(&conn_str);
+        let default_table = "default_table".to_string();
+
+        let sessions = Arc::new(SessionManager::new(timeout));
+
+        Ok(Self {
+            pool: Arc::new(pool),
+            default_database,
+            default_table,
+            sessions,
+            session_timeout: timeout,
+        })
+    }
+
+    /// Execute a SQL query and create a session
+    pub async fn execute_query(&self, query: &str, db_name: Option<&str>, table_name: Option<&str>) -> Result<String, AgfsError> {
+        let db_name = db_name.unwrap_or(&self.default_database);
+        let table_name = table_name.unwrap_or(&self.default_table);
+
+        // Execute the query
+        let result = self.execute_query_inner(query).await?;
+
+        // Create session with result
+        let session_id = self.sessions.create_session(
+            db_name.to_string(),
+            table_name.to_string(),
+            query.to_string(),
+            result.0,
+            result.1,
+        );
+
+        Ok(session_id)
+    }
+
+    /// Inner query execution
+    async fn execute_query_inner(&self, query: &str) -> Result<(Value, i64), AgfsError> {
+        let query = query.trim();
+
+        // Handle different query types
+        let upper = query.to_uppercase();
+        if upper.starts_with("SELECT") || upper.starts_with("SHOW") || upper.starts_with("DESCRIBE") || upper.starts_with("EXPLAIN") || upper.starts_with("PRAGMA") {
+            // Query that returns rows
+            self.execute_select(query).await
+        } else {
+            // Query that returns affected rows
+            self.execute_update(query).await
+        }
+    }
+
+    /// Execute a SELECT query
+    async fn execute_select(&self, query: &str) -> Result<(Value, i64), AgfsError> {
+        let rows = sqlx::query(query)
+            .fetch_all(&*self.pool)
+            .await
+            .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+        let mut result = json!({
+            "columns": [],
+            "rows": [],
         });
 
-        Ok(result)
+        if let Some(first_row) = rows.first() {
+            // Get column names
+            let columns = first_row.columns();
+            let column_names: Vec<String> = columns.iter().map(|c| c.name().to_string()).collect();
+            result["columns"] = json!(column_names);
+
+            // Build rows
+            let mut row_data = Vec::new();
+            for row in &rows {
+                let mut row_obj = serde_json::Map::new();
+                for col in columns {
+                    let name = col.name().to_string();
+                    // Try to get value as string
+                    let value: Option<String> = row.try_get(name.as_str()).ok();
+                    row_obj.insert(name, json!(value.unwrap_or_else(|| "NULL".to_string())));
+                }
+                row_data.push(json!(row_obj));
+            }
+            result["rows"] = json!(row_data);
+        }
+
+        Ok((result, rows.len() as i64))
+    }
+
+    /// Execute an UPDATE/INSERT/DELETE query
+    async fn execute_update(&self, query: &str) -> Result<(Value, i64), AgfsError> {
+        let result = sqlx::query(query)
+            .execute(&*self.pool)
+            .await
+            .map_err(|e| AgfsError::internal(format!("Query failed: {}", e)))?;
+
+        let affected = result.rows_affected() as i64;
+        let json_result = json!({
+            "affected_rows": affected,
+        });
+
+        Ok((json_result, affected))
+    }
+
+    /// Get session result as JSON string
+    pub fn get_session_result(&self, session_id: &str) -> Result<String, AgfsError> {
+        if let Some(session) = self.sessions.get_session(session_id) {
+            Ok(session.result.to_string())
+        } else {
+            Err(AgfsError::not_found(session_id))
+        }
+    }
+
+    /// Get session info
+    pub fn get_session_info(&self, session_id: &str) -> Result<Value, AgfsError> {
+        if let Some(session) = self.sessions.get_session(session_id) {
+            Ok(json!({
+                "id": session.id,
+                "database": session.db_name,
+                "table": session.table_name,
+                "query": session.query,
+                "row_count": session.row_count,
+                "created_at": session.created_at.to_rfc3339(),
+                "last_access": session.last_access.to_rfc3339(),
+                "error": session.last_error,
+            }))
+        } else {
+            Err(AgfsError::not_found(session_id))
+        }
+    }
+}
+
+/// Extract database name from connection string
+fn extract_database_name(conn_str: &str) -> String {
+    if let Some(path) = conn_str.strip_prefix("sqlite:") {
+        if let Some(name) = std::path::Path::new(path).file_stem() {
+            name.to_string_lossy().to_string()
+        } else if path == ":memory:" {
+            "memory".to_string()
+        } else {
+            "sqlite".to_string()
+        }
+    } else {
+        "sqlite".to_string()
     }
 }
 
 impl Default for SqlFS2 {
     fn default() -> Self {
-        Self::new()
+        // Create a default instance with in-memory SQLite
+        let runtime = tokio::runtime::Handle::try_current();
+        let pool = if let Ok(handle) = runtime {
+            handle.block_on(async {
+                SqlitePool::connect("sqlite::memory:").await
+            })
+        } else {
+            // Create a new runtime if none exists
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                SqlitePool::connect("sqlite::memory:").await
+            })
+        };
+
+        Self {
+            pool: Arc::new(pool.expect("Failed to create default pool")),
+            default_database: "default".to_string(),
+            default_table: "default".to_string(),
+            sessions: Arc::new(SessionManager::new(Duration::from_secs(300))),
+            session_timeout: Duration::from_secs(300),
+        }
     }
 }
 
 impl FileSystem for SqlFS2 {
     fn create(&self, path: &str) -> Result<(), AgfsError> {
         match path {
-            "/ctl" => Ok(()), // Control file
+            "/ctl" => Ok(()), // Control file is virtual
             _ => Err(AgfsError::NotSupported),
         }
     }
@@ -77,7 +347,14 @@ impl FileSystem for SqlFS2 {
         Ok(())
     }
 
-    fn remove(&self, _path: &str) -> Result<(), AgfsError> {
+    fn remove(&self, path: &str) -> Result<(), AgfsError> {
+        // Allow removing session results
+        if path.starts_with("/result/") {
+            let session_id = path.strip_prefix("/result/").unwrap_or("");
+            if self.sessions.remove_session(session_id) {
+                return Ok(());
+            }
+        }
         Err(AgfsError::NotSupported)
     }
 
@@ -87,18 +364,25 @@ impl FileSystem for SqlFS2 {
 
     fn read(&self, path: &str, _offset: i64, _size: i64) -> Result<Vec<u8>, AgfsError> {
         match path {
-            "/ctl" => Ok(b"Write query here to get session ID\n".to_vec()),
+            "/ctl" => Ok(b"Write query here to get session ID\nFormat: database/table/query\n".to_vec()),
+            "/sessions" => {
+                let sessions = self.sessions.list_sessions();
+                let json = json!({
+                    "sessions": sessions,
+                    "count": sessions.len(),
+                });
+                Ok(json.to_string().into_bytes())
+            }
             _ => {
                 // Check if it's a result file
                 if let Some(session_id) = path.strip_prefix("/result/") {
-                    if let Some(session) = self.sessions.get(session_id) {
-                        let rows = &session.result;
-                        let output = rows.iter()
-                            .map(|row| row.join(","))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        return Ok(output.into_bytes());
-                    }
+                    let result = self.get_session_result(session_id)?;
+                    return Ok(result.into_bytes());
+                }
+                // Check if it's a session info file
+                if let Some(session_id) = path.strip_prefix("/info/") {
+                    let info = self.get_session_info(session_id)?;
+                    return Ok(info.to_string().into_bytes());
                 }
                 Err(AgfsError::not_found(path))
             }
@@ -110,10 +394,25 @@ impl FileSystem for SqlFS2 {
             let query = std::str::from_utf8(data)
                 .map_err(|_| AgfsError::invalid_argument("invalid UTF-8"))?;
 
-            self.execute_query(query)?;
+            let runtime = tokio::runtime::Handle::try_current()
+                .map_err(|_| AgfsError::internal("no tokio runtime".to_string()))?;
 
-            // Return session ID as the write result
-            let session_id = self.sessions.len().to_string();
+            // Parse query format: database/table/QUERY or just QUERY
+            let (db_name, table_name, actual_query) = if query.contains('/') {
+                let parts: Vec<&str> = query.splitn(3, '/').collect();
+                if parts.len() == 3 {
+                    (Some(parts[0]), Some(parts[1]), parts[2])
+                } else {
+                    (None, None, query)
+                }
+            } else {
+                (None, None, query)
+            };
+
+            let session_id = runtime.block_on(async move {
+                self.execute_query(actual_query, db_name, table_name).await
+            })?;
+
             Ok(session_id.len() as i64)
         } else {
             Err(AgfsError::NotSupported)
@@ -132,10 +431,19 @@ impl FileSystem for SqlFS2 {
                     is_symlink: false,
                     meta: MetaData::with_type("control"),
                 },
+                FileInfo {
+                    name: "sessions".to_string(),
+                    size: 0,
+                    mode: 0o444,
+                    mod_time: Utc::now(),
+                    is_dir: false,
+                    is_symlink: false,
+                    meta: MetaData::with_type("session-list"),
+                },
             ];
 
             // Add result files for each session
-            for session_id in self.sessions.iter().map(|e| e.key().clone()) {
+            for session_id in self.sessions.list_sessions() {
                 files.push(FileInfo {
                     name: format!("result/{}", session_id),
                     size: 0,
@@ -144,6 +452,15 @@ impl FileSystem for SqlFS2 {
                     is_dir: false,
                     is_symlink: false,
                     meta: MetaData::with_type("result"),
+                });
+                files.push(FileInfo {
+                    name: format!("info/{}", session_id),
+                    size: 0,
+                    mode: 0o444,
+                    mod_time: Utc::now(),
+                    is_dir: false,
+                    is_symlink: false,
+                    meta: MetaData::with_type("info"),
                 });
             }
 
@@ -157,7 +474,7 @@ impl FileSystem for SqlFS2 {
         match path {
             "/" | "" => Ok(FileInfo {
                 name: String::new(),
-                size: self.sessions.len() as i64,
+                size: self.sessions.list_sessions().len() as i64,
                 mode: 0o555,
                 mod_time: Utc::now(),
                 is_dir: true,
@@ -173,7 +490,30 @@ impl FileSystem for SqlFS2 {
                 is_symlink: false,
                 meta: MetaData::with_type("control"),
             }),
-            _ => Err(AgfsError::not_found(path)),
+            "/sessions" => Ok(FileInfo {
+                name: "sessions".to_string(),
+                size: 0,
+                mode: 0o444,
+                mod_time: Utc::now(),
+                is_dir: false,
+                is_symlink: false,
+                meta: MetaData::with_type("session-list"),
+            }),
+            _ => {
+                if path.starts_with("/result/") || path.starts_with("/info/") {
+                    Ok(FileInfo {
+                        name: path.trim_start_matches('/').to_string(),
+                        size: 0,
+                        mode: 0o444,
+                        mod_time: Utc::now(),
+                        is_dir: false,
+                        is_symlink: false,
+                        meta: MetaData::default(),
+                    })
+                } else {
+                    Err(AgfsError::not_found(path))
+                }
+            }
         }
     }
 
@@ -199,34 +539,44 @@ impl FileSystem for SqlFS2 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_sqlfs2_ctl() {
-        let fs = SqlFS2::new();
+    #[tokio::test]
+    async fn test_sqlfs2_create_table_and_query() {
+        let fs = SqlFS2::new("sqlite::memory:").await.unwrap();
+
+        // Create a test table
+        let create_query = "CREATE TABLE test_users (id INTEGER PRIMARY KEY, name TEXT)";
+        let session_id = fs.execute_query(create_query, Some("test"), Some("test_users")).await.unwrap();
+        assert!(!session_id.is_empty());
+
+        // Insert some data
+        let insert_query = "INSERT INTO test_users (id, name) VALUES (1, 'Alice'), (2, 'Bob')";
+        let session_id = fs.execute_query(insert_query, Some("test"), Some("test_users")).await.unwrap();
+        let info = fs.get_session_info(&session_id).unwrap();
+        assert_eq!(info["row_count"], 2);
+
+        // Query the data
+        let select_query = "SELECT * FROM test_users";
+        let session_id = fs.execute_query(select_query, Some("test"), Some("test_users")).await.unwrap();
+        let result = fs.get_session_result(&session_id).unwrap();
+        assert!(result.contains("Alice"));
+        assert!(result.contains("Bob"));
+    }
+
+    #[tokio::test]
+    async fn test_sqlfs2_ctl() {
+        let fs = SqlFS2::new("sqlite::memory:").await.unwrap();
 
         // Write query to ctl
-        fs.write("/ctl", b"SELECT * FROM test", 0, WriteFlag::NONE).unwrap();
+        fs.write("/ctl", b"SELECT 1 as num", 0, WriteFlag::NONE).unwrap();
 
         // Read result files
         let files = fs.read_dir("/").unwrap();
         assert!(files.iter().any(|f| f.name.starts_with("result/")));
     }
 
-    #[test]
-    fn test_sqlfs2_read_result() {
-        let fs = SqlFS2::new();
-
-        // Create a session by writing to ctl
-        fs.write("/ctl", b"SELECT 1", 0, WriteFlag::NONE).unwrap();
-
-        // List to find result file
-        let files = fs.read_dir("/").unwrap();
-        let result_file = files.iter()
-            .find(|f| f.name.starts_with("result/"))
-            .map(|f| f.name.clone());
-
-        if let Some(result_file) = result_file {
-            let data = fs.read(&format!("/{}", result_file), 0, -1).unwrap();
-            assert!(!data.is_empty());
-        }
+    #[tokio::test]
+    async fn test_sqlfs2_connection_string() {
+        assert_eq!(extract_database_name("sqlite::memory:"), "memory");
+        assert_eq!(extract_database_name("sqlite:/path/to/db.sqlite"), "db");
     }
 }
