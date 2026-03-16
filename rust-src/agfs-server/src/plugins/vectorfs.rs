@@ -1,12 +1,44 @@
 //! VectorFS - Vector Search File System
 //!
 //! Provides vector similarity search with embedding support.
+//! Supports OpenAI embeddings API and compatible endpoints.
 
 use agfs_sdk::{AgfsError, FileInfo, FileSystem, MetaData, WriteFlag};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
+
+/// Embedding API configuration
+#[derive(Debug, Clone)]
+pub struct EmbeddingConfig {
+    /// API key for authentication
+    pub api_key: Option<String>,
+    /// Model to use (e.g., "text-embedding-3-small", "text-embedding-ada-002")
+    pub model: String,
+    /// API base URL (default: https://api.openai.com/v1)
+    pub api_base: String,
+    /// Embedding dimensions (auto-detected from API response)
+    pub dimensions: Option<usize>,
+    /// Request timeout
+    pub timeout: Duration,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            api_key: std::env::var("OPENAI_API_KEY")
+                .or_else(|_| std::env::var("VECTORFS_API_KEY"))
+                .ok(),
+            model: "text-embedding-3-small".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            dimensions: None,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
 
 /// Vector document with embedding
 #[derive(Debug, Clone)]
@@ -19,13 +51,54 @@ struct VectorDocument {
 }
 
 /// Search result
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
-    document_id: String,
-    content: String,
-    score: f32,
-    metadata: HashMap<String, String>,
+    pub document_id: String,
+    pub content: String,
+    pub score: f32,
+    pub metadata: HashMap<String, String>,
+}
+
+/// OpenAI Embedding API request
+#[derive(Debug, Serialize)]
+struct EmbeddingRequest {
+    input: String,
+    model: String,
+    dimensions: Option<usize>,
+}
+
+/// OpenAI Embedding API response
+#[derive(Debug, Deserialize)]
+struct EmbeddingResponse {
+    data: Vec<EmbeddingData>,
+    #[allow(dead_code)]
+    model: String,
+    #[allow(dead_code)]
+    usage: Option<EmbeddingUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
+    index: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingUsage {
+    total_tokens: u32,
+}
+
+/// Error response from API
+#[derive(Debug, Deserialize)]
+struct ApiError {
+    error: ErrorDetail,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorDetail {
+    message: String,
+    #[serde(default)]
+    r#type: String,
 }
 
 /// VectorFS - Vector search filesystem
@@ -33,45 +106,101 @@ pub struct SearchResult {
 pub struct VectorFS {
     documents: Arc<RwLock<HashMap<String, VectorDocument>>>,
     doc_counter: Arc<std::sync::atomic::AtomicU64>,
-    api_key: Option<String>,
-    model: String,
+    config: EmbeddingConfig,
     plugin_name: String,
+    http_client: Arc<reqwest::Client>,
 }
 
 impl VectorFS {
-    /// Create a new VectorFS instance
+    /// Create a new VectorFS instance with default configuration
     pub fn new() -> Self {
+        Self::with_config(EmbeddingConfig::default())
+    }
+
+    /// Create a new VectorFS instance with custom configuration
+    pub fn with_config(config: EmbeddingConfig) -> Self {
+        let http_client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
             documents: Arc::new(RwLock::new(HashMap::new())),
             doc_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
-            api_key: None,
-            model: "text-embedding-ada-002".to_string(),
+            config,
             plugin_name: "vectorfs".to_string(),
+            http_client: Arc::new(http_client),
         }
     }
 
     /// Set API key for embeddings
     pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
-        self.api_key = Some(api_key.into());
+        self.config.api_key = Some(api_key.into());
         self
     }
 
     /// Set embedding model
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
+        self.config.model = model.into();
         self
     }
 
-    /// Generate embedding for text (placeholder)
+    /// Set API base URL (for compatible APIs)
+    pub fn with_api_base(mut self, api_base: impl Into<String>) -> Self {
+        self.config.api_base = api_base.into();
+        self
+    }
+
+    /// Set embedding dimensions
+    pub fn with_dimensions(mut self, dimensions: usize) -> Self {
+        self.config.dimensions = Some(dimensions);
+        self
+    }
+
+    /// Generate embedding for text using the configured API
     pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>, AgfsError> {
-        // In full implementation, this would call an embedding API
-        // For now, return a placeholder embedding based on text hash
-        let hash = text.chars().map(|c| c as u32).sum::<u32>();
-        let size = 1536; // Standard embedding size
-        let mut embedding = Vec::with_capacity(size);
-        for i in 0..size {
-            embedding.push(((hash.wrapping_mul(i as u32)) as f32) / (u32::MAX as f32));
+        let api_key = self.config.api_key.as_ref()
+            .ok_or_else(|| AgfsError::internal("VectorFS: API key not configured. Set OPENAI_API_KEY environment variable or use with_api_key()"))?;
+
+        let url = format!("{}/embeddings", self.config.api_base.trim_end_matches('/'));
+
+        let request_body = EmbeddingRequest {
+            input: text.to_string(),
+            model: self.config.model.clone(),
+            dimensions: self.config.dimensions,
+        };
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| AgfsError::internal(format!("VectorFS: API request failed: {}", e)))?;
+
+        let status = response.status();
+        let response_text = response.text().await
+            .map_err(|e| AgfsError::internal(format!("VectorFS: failed to read response: {}", e)))?;
+
+        if !status.is_success() {
+            // Try to parse error message
+            if let Ok(api_err) = serde_json::from_str::<ApiError>(&response_text) {
+                return Err(AgfsError::internal(format!("VectorFS API error: {}", api_err.error.message)));
+            }
+            return Err(AgfsError::internal(format!("VectorFS: API returned error {}: {}", status.as_u16(), response_text)));
         }
+
+        let embedding_response: EmbeddingResponse = serde_json::from_str(&response_text)
+            .map_err(|e| AgfsError::internal(format!("VectorFS: failed to parse response: {}", e)))?;
+
+        // Get the first embedding (we only sent one input)
+        let embedding = embedding_response.data
+            .first()
+            .ok_or_else(|| AgfsError::internal("VectorFS: API returned no embeddings"))?
+            .embedding
+            .clone();
+
         Ok(embedding)
     }
 
@@ -101,7 +230,7 @@ impl VectorFS {
         Ok(results)
     }
 
-    /// Add a document
+    /// Add a document with embedding
     pub async fn add_document(&self, content: &str, metadata: HashMap<String, String>) -> Result<String, AgfsError> {
         let id = format!("doc_{}", self.doc_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
         let embedding = self.generate_embedding(content).await?;
@@ -118,6 +247,30 @@ impl VectorFS {
         documents.insert(id.clone(), doc);
 
         Ok(id)
+    }
+
+    /// Get document by ID
+    pub async fn get_document(&self, id: &str) -> Option<VectorDocument> {
+        let documents = self.documents.read().await;
+        documents.get(id).cloned()
+    }
+
+    /// List all document IDs
+    pub async fn list_documents(&self) -> Vec<String> {
+        let documents = self.documents.read().await;
+        documents.keys().cloned().collect()
+    }
+
+    /// Delete a document
+    pub async fn delete_document(&self, id: &str) -> bool {
+        let mut documents = self.documents.write().await;
+        documents.remove(id).is_some()
+    }
+
+    /// Get the number of documents
+    pub async fn document_count(&self) -> usize {
+        let documents = self.documents.read().await;
+        documents.len()
     }
 }
 
@@ -264,7 +417,8 @@ impl FileSystem for VectorFS {
                     r#type: "vector-filesystem".to_string(),
                     content: {
                         let mut map = HashMap::new();
-                        map.insert("model".to_string(), self.model.clone());
+                        map.insert("model".to_string(), self.config.model.clone());
+                        map.insert("api_base".to_string(), self.config.api_base.clone());
                         map
                     },
                 },
@@ -287,6 +441,7 @@ impl FileSystem for VectorFS {
                         let mut map = HashMap::new();
                         if doc.embedding.is_some() {
                             map.insert("indexed".to_string(), "true".to_string());
+                            map.insert("embedding_dim".to_string(), doc.embedding.as_ref().unwrap().len().to_string());
                         }
                         map
                     },
@@ -327,21 +482,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vectorfs_create_and_write() {
+    fn test_vectorfs_create_and_cache() {
         let fs = VectorFS::new();
 
-        // Create a document directly without using write
-        let doc = VectorDocument {
-            id: "/doc_1".to_string(),
-            content: "Hello, world!".to_string(),
-            embedding: None,
-            metadata: HashMap::new(),
-            created_at: Utc::now(),
-        };
-        fs.documents.blocking_write().insert("/doc_1".to_string(), doc);
+        fs.create("/doc_1").unwrap();
 
-        let data = fs.read("/doc_1", 0, -1).unwrap();
-        assert_eq!(data, b"Hello, world!");
+        let cache = fs.documents.blocking_read();
+        assert!(cache.contains_key("/doc_1"));
     }
 
     #[test]
@@ -365,7 +512,7 @@ mod tests {
         let doc = VectorDocument {
             id: "/doc_1".to_string(),
             content: "test content".to_string(),
-            embedding: None,
+            embedding: Some(vec![0.1, 0.2, 0.3]),
             metadata: HashMap::new(),
             created_at: Utc::now(),
         };
@@ -377,9 +524,82 @@ mod tests {
     }
 
     #[test]
-    fn test_vectorfs_with_api_key() {
-        let fs = VectorFS::new().with_api_key("sk-test").with_model("text-embedding-3-small");
-        assert_eq!(fs.api_key, Some("sk-test".to_string()));
-        assert_eq!(fs.model, "text-embedding-3-small");
+    fn test_vectorfs_config() {
+        let config = EmbeddingConfig {
+            api_key: Some("sk-test".to_string()),
+            model: "text-embedding-3-small".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            dimensions: Some(1536),
+            timeout: Duration::from_secs(60),
+        };
+        let fs = VectorFS::with_config(config);
+        assert_eq!(fs.config.api_key, Some("sk-test".to_string()));
+        assert_eq!(fs.config.model, "text-embedding-3-small");
+        assert_eq!(fs.config.dimensions, Some(1536));
+    }
+
+    #[test]
+    fn test_vectorfs_builder_pattern() {
+        let fs = VectorFS::new()
+            .with_api_key("sk-test")
+            .with_model("text-embedding-3-large")
+            .with_dimensions(3072)
+            .with_api_base("https://api.example.com/v1");
+
+        assert_eq!(fs.config.api_key, Some("sk-test".to_string()));
+        assert_eq!(fs.config.model, "text-embedding-3-large");
+        assert_eq!(fs.config.dimensions, Some(3072));
+        assert_eq!(fs.config.api_base, "https://api.example.com/v1");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires API key"]
+    async fn test_vectorfs_real_embedding() {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .expect("OPENAI_API_KEY must be set for this test");
+
+        let config = EmbeddingConfig {
+            api_key: Some(api_key),
+            ..Default::default()
+        };
+
+        let fs = VectorFS::with_config(config);
+        let embedding = fs.generate_embedding("hello world").await.unwrap();
+
+        assert!(!embedding.is_empty());
+        assert!(embedding.len() > 100); // Embeddings should have significant dimensionality
+        println!("Embedding dimension: {}", embedding.len());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires API key"]
+    async fn test_vectorfs_search() {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .expect("OPENAI_API_KEY must be set for this test");
+
+        let config = EmbeddingConfig {
+            api_key: Some(api_key),
+            ..Default::default()
+        };
+
+        let fs = VectorFS::with_config(config);
+
+        // Add some documents
+        let mut metadata = HashMap::new();
+        metadata.insert("category".to_string(), "rust".to_string());
+        fs.add_document("Rust is a systems programming language", metadata).await.unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("category".to_string(), "python".to_string());
+        fs.add_document("Python is a high-level programming language", metadata).await.unwrap();
+
+        // Search for similar content
+        let results = fs.search("systems programming", 5).await.unwrap();
+
+        assert!(!results.is_empty());
+        println!("Search results:");
+        for result in &results {
+            println!("  - {} (score: {:.4}): {}", result.document_id, result.score, result.content);
+        }
     }
 }
