@@ -1,5 +1,5 @@
 [Unit]
-Description=AGFS Rust Server
+Description=CtxFS Rust Server
 After=network.target
 
 [Service]
@@ -7,8 +7,8 @@ Type=simple
 User=yalun
 Group=yalun
 WorkingDirectory=/home/yalun/Dev/agfs
-ExecStart=/home/yalun/Dev/agfs/rust-src/target/release/agfs-server --config /home/yalun/Dev/agfs/test-config.yaml
-ExecStop=/home/yalun/Dev/agfs/stop-agfs.sh
+ExecStart=/home/yalun/Dev/agfs/src/target/release/ctxfs-server --config /home/yalun/Dev/agfs/tests/test-config.yaml
+ExecStop=/home/yalun/Dev/agfs/scripts/stop-agfs.sh
 Restart=on-failure
 RestartSec=5
 

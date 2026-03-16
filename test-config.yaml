@@ -1,9 +1,0 @@
-listen_addr: "0.0.0.0:1833"
-plugins:
-  - name: memfs
-    mount: /memfs
-  - name: localfs
-    mount: /local
-    local_dir: /tmp/agfs-local
-  - name: queuefs
-    mount: /queue
