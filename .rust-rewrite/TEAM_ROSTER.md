@@ -1,14 +1,14 @@
 # CtxFS Rust 重写 · Team 名单
 
-> 最后更新：2025-03-16
+> 最后更新：2025-03-17
 
 ---
 
 ## 当前 Team
 
-**Phase**: 1 → 2 过渡期
-**Team Lead**: `rewrite-lead`
-**活跃 Teammates**: 无
+**Phase**: 8 (端到端验收)
+**Team Lead**: `team-lead`
+**活跃 Teammates**: `integration-engineer` (进行验收测试)
 
 ---
 
