@@ -14,6 +14,9 @@
 | 7 | FUSE 客户端 | completed | fuse-engineer | 2025-03-15 | 2025-03-15 |
 | 8 | 端到端验收 | completed | integration-engineer | 2025-03-16 | 2025-03-16 |
 | 9 | 清理（删除 Go 源码） | completed | - | 2025-03-16 | 2025-03-16 |
+| R1 | 目录结构重构（Python 组件移至 rust-src） | completed | refactor-engineer | 2025-03-16 | 2025-03-16 |
+| R2 | 替换 OpenViking third_party/agfs | completed | refactor-engineer | 2025-03-16 | 2025-03-16 |
+| R3 | 更新文档和配置 | completed | refactor-engineer | 2025-03-16 | 2025-03-16 |
 
 ---
 
@@ -98,3 +101,45 @@
 ## Phase 9：清理
 
 **任务**（Leader 直接执行）: 删除 Go 源码
+
+---
+
+## Phase R1：目录结构重构（Python 组件移至 rust-src）
+
+**Teammate**: `refactor-engineer`
+
+**任务**:
+- 使用 `git mv` 移动 Python 组件到 rust-src/
+- `agfs-mcp/` → `rust-src/agfs-mcp/`
+- `agfs-shell/` → `rust-src/agfs-shell/`
+- `agfs-sdk/python/` → `rust-src/python-sdk/`
+- 更新路径引用（install.sh、workflows、CLAUDE.md）
+- 验证构建成功
+
+**验收**: 目录结构符合方案 B，cargo check 通过
+
+---
+
+## Phase R2：替换 OpenViking third_party/agfs
+
+**Teammate**: `refactor-engineer`
+
+**任务**:
+- 验证 OpenViking 的 third_party/agfs 符号链接指向 rust-src
+- 确保 OpenViking 能正确引用新的项目结构
+
+**验收**: 符号链接正确，OpenViking 构建成功
+
+---
+
+## Phase R3：更新文档和配置
+
+**Teammate**: `refactor-engineer`
+
+**任务**:
+- 更新 README.md 中的路径引用
+- 更新 PHASES.md 添加重构阶段
+- 检查 Dockerfile 路径（已使用 rust-src 为工作目录，无需修改）
+- 检查其他配置文件
+
+**验收**: 所有文档路径引用正确，Docker 构建成功

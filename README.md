@@ -247,7 +247,7 @@ Run scripts directly:
 ./enqueue_task.as "process report.pdf"
 ```
 
-See more examples in [agfs-shell/examples](./agfs-shell/examples/).
+See more examples in [rust-src/agfs-shell/examples](./rust-src/agfs-shell/examples/).
 
 ## Use Case: AI Agent Task Loop
 
@@ -261,15 +261,16 @@ while True:
         agfs.write(f"/kvfs/keys/result_{task.id}", result)
 ```
 
-See [task_loop.py](./agfs-mcp/demos/task_loop.py) for a complete example.
+See [task_loop.py](./rust-src/agfs-mcp/demos/task_loop.py) for a complete example.
 
 ## Documentation
 
 - [rust-src/agfs-server](./rust-src/agfs-server/) - Server implementation (Rust)
 - [rust-src/agfs-sdk](./rust-src/agfs-sdk/) - SDK and type definitions (Rust)
 - [rust-src/agfs-fuse](./rust-src/agfs-fuse/) - FUSE filesystem mount (Rust, Linux)
-- [agfs-shell](./agfs-shell/) - Interactive shell client (Python)
-- [agfs-mcp](./agfs-mcp/) - MCP integration (Python)
+- [rust-src/agfs-shell](./rust-src/agfs-shell/) - Interactive shell client (Python)
+- [rust-src/agfs-mcp](./rust-src/agfs-mcp/) - MCP integration (Python)
+- [rust-src/python-sdk](./rust-src/python-sdk/) - Python SDK
 
 ## Architecture
 
