@@ -6,6 +6,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH=$HOME/.local/bin:$PATH
 
+# 设置使用外部 Rust AGFS
+export OPENVIKING_AFS_URL="http://localhost:8080"
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
