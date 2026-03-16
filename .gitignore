@@ -45,6 +45,7 @@ __pycache__/
 
 # Rust build artifacts
 rust-src/target/
+src/target/
 
 # Cargo lock (workspace-level, keep the one in rust-src/)
 # rust-src/Cargo.lock  ← 保留，用于可重现构建
