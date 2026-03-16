@@ -1,9 +1,10 @@
 # <img src="./assets/logo-white.png" alt="AGFS Logo" height="40" style="vertical-align: middle;"/>
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Daily Build](https://github.com/c4pt0r/agfs/actions/workflows/daily-build.yml/badge.svg)](https://github.com/c4pt0r/agfs/actions/workflows/daily-build.yml)
 
 **Aggregated File System (Agent FS)** - Everything is a file, in RESTful APIs. A tribute to Plan9.
+
+> **Note**: AGFS has been rewritten in [Rust](https://www.rust-lang.org/) for better performance, memory safety, and maintainability. The API remains fully compatible with the original Go implementation.
 
 ## Why AGFS?
 
@@ -27,33 +28,78 @@ The benefits:
 3. **Composability** - Combine services using pipes, redirections, and other shell features.
 4. **Easy debugging** - Use ls and cat to inspect system state.
 
+## Performance
+
+Compared to the original Go implementation, the Rust version offers:
+
+| Metric | Go AGFS | Rust AGFS | Improvement |
+|--------|---------|-----------|-------------|
+| Binary Size | 33MB | 8MB | **76% smaller** |
+| Memory Usage | 15MB | 7MB | **54% less** |
+| Large File Write (10MB) | 390ms | 183ms | **2.1x faster** |
+| Large File Read (10MB) | 27ms | 9ms | **3x faster** |
+
+See [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md) for detailed performance analysis.
+
 ## Quick Start
 
-Install:
+### Build from source
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/c4pt0r/agfs/master/install.sh | sh
+# Clone the repository
+git clone https://github.com/c4pt0r/agfs.git
+cd agfs
+
+# Build the server
+cd rust-src
+cargo build --release
+
+# The binaries will be in:
+# - target/release/agfs-server
+# - target/release/agfs-fuse
 ```
 
-Or via Docker:
+### Run the server
 
 ```bash
-docker pull c4pt0r/agfs:latest
+# Using the built binary
+./target/release/agfs-server --config config.yaml
+
+# Or using cargo
+cargo run --release --bin agfs-server -- -c config.yaml
+```
+
+Example configuration (`config.yaml`):
+
+```yaml
+server:
+  address: ":8080"
+  log_level: info
+
+plugins:
+  memfs:
+    enabled: true
+    path: /
+    config: {}
+
+  localfs:
+    enabled: true
+    path: /local
+    config:
+      local_dir: /tmp/agfs-local
+```
+
+### Docker
+
+```bash
+# Build the Docker image
+docker build -t agfs-rust:latest .
 
 # Run the server (HTTP API only)
-docker run -p 8080:8080 -e SKIP_FUSE_MOUNT=true c4pt0r/agfs:latest
-
-# On Linux, you can enable FUSE mounting with additional privileges
-docker run -p 8080:8080 \
-  --device /dev/fuse \
-  --cap-add SYS_ADMIN \
-  --security-opt apparmor:unconfined \
-  c4pt0r/agfs:latest
-
-# Note: FUSE mounting in Docker is not supported on macOS
+docker run -p 8080:8080 agfs-rust:latest
 ```
 
-Connect using agfs-shell:
+### Connect using agfs-shell
 
 ```bash
 $ agfs
@@ -76,8 +122,6 @@ cat /mnt/agfs/queuefs/tasks/dequeue
 ```
 
 This makes AGFS accessible to any application, script, or programming language that can read and write files.
-
-See [agfs-fuse/README.md](./agfs-fuse/README.md) for installation and usage.
 
 ## Examples
 
@@ -221,7 +265,34 @@ See [task_loop.py](./agfs-mcp/demos/task_loop.py) for a complete example.
 
 ## Documentation
 
-- [agfs-server](./agfs-server/README.md) - Server configuration and plugin development
-- [agfs-shell](./agfs-shell/README.md) - Interactive shell client
-- [agfs-fuse](./agfs-fuse/README.md) - FUSE filesystem mount (Linux)
+- [rust-src/agfs-server](./rust-src/agfs-server/) - Server implementation (Rust)
+- [rust-src/agfs-sdk](./rust-src/agfs-sdk/) - SDK and type definitions (Rust)
+- [rust-src/agfs-fuse](./rust-src/agfs-fuse/) - FUSE filesystem mount (Rust, Linux)
+- [agfs-shell](./agfs-shell/) - Interactive shell client (Python)
+- [agfs-mcp](./agfs-mcp/) - MCP integration (Python)
 
+## Architecture
+
+AGFS is built with a plugin architecture:
+
+```
+agfs-server (Rust)
+├── HTTP Server (Axum)
+├── MountableFS (Radix Tree Router)
+└── Plugins
+    ├── memfs - In-memory filesystem
+    ├── localfs - Local directory mount
+    ├── kvfs - Key-value storage
+    ├── queuefs - Message queue (SQLite)
+    ├── s3fs - S3 object storage
+    ├── sqlfs/sqlfs2 - SQL database interface
+    ├── streamfs - Stream multiplexing
+    ├── heartbeatfs - Agent heartbeat tracking
+    ├── httpfs - HTTP request proxy
+    ├── proxyfs - AGFS-to-AGFS proxy
+    └── ... (more plugins)
+```
+
+## License
+
+Apache License 2.0
